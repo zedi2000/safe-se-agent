@@ -46,7 +46,12 @@ class SimpleAgentAdapter(AgentAdapter):
     def solve(self, task: Task, memories: list[MemoryEntry] | None = None) -> RunResult:
         start = time.perf_counter()
         selected_memories = memories if memories is not None else self.retrieve(task, self.retrieve_k)
-        answer, reasoning, token_count = self.llm.solve(task, selected_memories)
+        solve_output = self.llm.solve(task, selected_memories)
+        if len(solve_output) == 4:
+            answer, reasoning, token_count, raw_response = solve_output
+        else:
+            answer, reasoning, token_count = solve_output
+            raw_response = reasoning
         correct = self._normalize(answer) == self._normalize(task.answer)
         latency_s = time.perf_counter() - start
         trajectory = Trajectory(
@@ -54,6 +59,7 @@ class SimpleAgentAdapter(AgentAdapter):
             answer=answer,
             correct=correct,
             reasoning=reasoning,
+            raw_response=raw_response,
             retrieved_memory_ids=tuple(memory.id for memory in selected_memories),
             expected_answer=task.answer,
         )
@@ -63,6 +69,7 @@ class SimpleAgentAdapter(AgentAdapter):
             correct=correct,
             reasoning=reasoning,
             trajectory=trajectory,
+            raw_response=raw_response,
             retrieved_memory_ids=trajectory.retrieved_memory_ids,
             token_count=token_count,
             latency_s=latency_s,
@@ -74,6 +81,8 @@ class SimpleAgentAdapter(AgentAdapter):
         for group in self._reflection_groups(trajectories):
             rule_texts = self.llm.reflect(group)
             for text in rule_texts:
+                if not text.strip():
+                    continue
                 tags = self._infer_tags(text, group)
                 source_ids = self._source_ids_for_rule(tags, group)
                 tag_for_id = next((tag for tag in tags if tag != "arithmetic"), None) or "reflection"

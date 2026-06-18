@@ -30,6 +30,7 @@ class Trajectory:
     answer: str
     correct: bool
     reasoning: str
+    raw_response: str | None = None
     retrieved_memory_ids: tuple[str, ...] = ()
     expected_answer: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -42,6 +43,7 @@ class RunResult:
     correct: bool | None
     reasoning: str
     trajectory: Trajectory
+    raw_response: str | None = None
     retrieved_memory_ids: tuple[str, ...] = ()
     token_count: int | None = None
     latency_s: float | None = None

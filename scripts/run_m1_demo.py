@@ -22,7 +22,7 @@ from safe_se_agent.core.io import load_jsonl_tasks
 from safe_se_agent.core.memory import memory_to_dict
 from safe_se_agent.core.types import RunResult
 from safe_se_agent.llm.offline import OfflineLLMClient
-from safe_se_agent.llm.openai_compatible import OpenAICompatibleClient
+from safe_se_agent.llm.openai_compatible import LLMConnectionError, OpenAICompatibleClient
 
 
 class ConsoleProgress:
@@ -140,6 +140,7 @@ def result_to_dict(result: RunResult) -> dict[str, object]:
         "correct": result.correct,
         "retrieved_memory_ids": list(result.retrieved_memory_ids),
         "reasoning": result.reasoning,
+        "response": result.raw_response,
         "tags": list(task.tags),
         "metadata": task.metadata,
         "token_count": result.token_count,
@@ -227,7 +228,11 @@ def main() -> None:
     run_dir = ROOT / "runs" / args.run_id
     memory_path = run_dir / "memory.jsonl"
     progress = None if args.no_progress else ConsoleProgress(mode=args.progress)
-    adapter = build_adapter(args.mode, retrieve_k=args.retrieve_k, memory_path=memory_path)
+    try:
+        adapter = build_adapter(args.mode, retrieve_k=args.retrieve_k, memory_path=memory_path)
+    except RuntimeError as exc:
+        print(f"初始化失败：{exc}")
+        raise SystemExit(2) from exc
     runner = ExperimentRunner(
         adapter,
         ExperimentConfig(
@@ -244,9 +249,16 @@ def main() -> None:
     print(f"- memory_path: {memory_path}")
 
     start = time.perf_counter()
-    baseline = runner.run_no_memory(eval_tasks)
-    self_evo = runner.run_self_evolution(train_tasks, eval_tasks)
-    write_artifacts(run_dir, baseline, self_evo, progress=progress)
+    try:
+        baseline = runner.run_no_memory(eval_tasks)
+        self_evo = runner.run_self_evolution(train_tasks, eval_tasks)
+        write_artifacts(run_dir, baseline, self_evo, progress=progress)
+    except LLMConnectionError as exc:
+        if progress:
+            progress.close()
+        print("\nLLM 调用失败：")
+        print(exc)
+        raise SystemExit(2) from exc
     if progress:
         progress.close()
     elapsed = time.perf_counter() - start

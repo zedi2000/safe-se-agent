@@ -31,6 +31,9 @@ def test_self_evolution_improves_offline_accuracy(tmp_path) -> None:
     assert (tmp_path / "baseline_results.jsonl").exists()
     assert (tmp_path / "self_evolution_results.jsonl").exists()
     assert (tmp_path / "summary.json").exists()
+    first_result = (tmp_path / "self_evolution_results.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    assert '"reasoning"' in first_result
+    assert '"response"' in first_result
 
 
 def test_experiment_runner_emits_progress_events(tmp_path) -> None:
