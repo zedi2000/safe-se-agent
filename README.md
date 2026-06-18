@@ -13,6 +13,8 @@
 conda env create -f environment.yml
 conda activate safe-se-agent
 python scripts/prepare_gsm8k.py --limit-train 20 --limit-eval 20
+python scripts/prepare_medqa.py --limit-train 20 --limit-eval 20
+python scripts/prepare_toolalpaca.py --limit-train 20 --limit-eval 20
 python scripts/run_m1_demo.py --mode llm --run-id gsm8k_m1_llm
 pytest -q
 ```
@@ -23,7 +25,9 @@ backend 为准。
 每次 demo 默认写入：
 
 - `runs/<run_id>/memory.jsonl`
+- `runs/<run_id>/interaction_log.jsonl`
 - `runs/<run_id>/baseline_results.jsonl`
+- `runs/<run_id>/train_results.jsonl`
 - `runs/<run_id>/self_evolution_results.jsonl`
 - `runs/<run_id>/summary.json`
 
@@ -35,6 +39,26 @@ python scripts/run_m1_demo.py --mode offline \
   --eval data/m1_eval.jsonl \
   --run-id synthetic_smoke
 ```
+
+## 真实数据集准备
+
+OEP 论文中的三个基础数据源目前都可以转换成统一的 `Task` JSONL schema：
+
+```bash
+python scripts/prepare_gsm8k.py --limit-train 20 --limit-eval 20
+python scripts/prepare_medqa.py --limit-train 20 --limit-eval 20
+python scripts/prepare_toolalpaca.py --limit-train 20 --limit-eval 20
+```
+
+对应 smoke test：
+
+```bash
+python scripts/run_m1_demo.py --mode offline --train data/gsm8k_train_small.jsonl --eval data/gsm8k_eval_small.jsonl --run-id gsm8k_smoke --no-progress
+python scripts/run_m1_demo.py --mode offline --train data/medqa_train_small.jsonl --eval data/medqa_eval_small.jsonl --run-id medqa_smoke --no-progress
+python scripts/run_m1_demo.py --mode offline --train data/toolalpaca_train_small.jsonl --eval data/toolalpaca_eval_small.jsonl --run-id toolalpaca_smoke --no-progress
+```
+
+离线 backend 对 MedQA/ToolAlpaca 只验证数据与实验产物流转，不代表真实 performance。
 
 ## 进度显示
 
@@ -67,7 +91,9 @@ python scripts/run_m1_demo.py --mode llm
 - `safe_se_agent/core/memory.py`: append-only memory store, retrieval, and JSONL persistence.
 - `safe_se_agent/core/defenses.py`: thin wrappers reserved for Milestone 3 defenses.
 - `scripts/prepare_gsm8k.py`: 下载并转换 GSM8K small 数据。
-- `data/gsm8k_train_small.jsonl` and `data/gsm8k_eval_small.jsonl`: 默认真实评测数据。
+- `scripts/prepare_medqa.py`: 下载并转换 MedQA small 数据。
+- `scripts/prepare_toolalpaca.py`: 下载并转换 ToolAlpaca small 数据。
+- `data/*_train_small.jsonl` and `data/*_eval_small.jsonl`: 默认真实数据 smoke/eval 输入。
 - `data/m1_train.jsonl` and `data/m1_eval.jsonl`: synthetic smoke-test benchmark.
 - `docs/memory_integration_zh.md`: memory 与外部 agent 框架的接洽说明。
 
