@@ -18,7 +18,12 @@ def test_self_evolution_improves_offline_accuracy(tmp_path) -> None:
     assert baseline.correct == 0
     assert self_evo.correct == len(eval_tasks)
     assert self_evo.learned_rules
-    assert {rule.tags[1] for rule in self_evo.learned_rules} == {
+    assert self_evo.memory_update_policy == "per_interaction"
+    assert self_evo.train_records
+    assert self_evo.num_memory_generated >= self_evo.num_memory_added
+    assert self_evo.num_memory_added == self_evo.memory_count
+    assert self_evo.num_memory_skipped_duplicate >= 0
+    assert {rule.tags[1] for rule in self_evo.learned_rules} >= {
         "average_with_extra_item",
         "discount_then_tax",
         "total_with_fee",
@@ -29,11 +34,16 @@ def test_self_evolution_improves_offline_accuracy(tmp_path) -> None:
     write_artifacts(tmp_path, baseline, self_evo)
     assert (tmp_path / "memory.jsonl").exists()
     assert (tmp_path / "baseline_results.jsonl").exists()
+    assert (tmp_path / "train_results.jsonl").exists()
     assert (tmp_path / "self_evolution_results.jsonl").exists()
     assert (tmp_path / "summary.json").exists()
     first_result = (tmp_path / "self_evolution_results.jsonl").read_text(encoding="utf-8").splitlines()[0]
     assert '"reasoning"' in first_result
     assert '"response"' in first_result
+    summary = (tmp_path / "summary.json").read_text(encoding="utf-8")
+    assert '"memory_update_policy": "per_interaction"' in summary
+    assert '"num_memory_generated"' in summary
+    assert '"num_memory_added"' in summary
 
 
 def test_experiment_runner_emits_progress_events(tmp_path) -> None:
@@ -56,12 +66,36 @@ def test_experiment_runner_emits_progress_events(tmp_path) -> None:
     assert "memory_write" in stages
     assert "retrieve" in stages
     assert "self_evo_solve" in stages
+    assert stages.count("reflect") >= 2
 
     baseline_progress = [
         event for event in events if event.stage == "baseline_solve" and event.status == "progress"
     ]
     assert [event.current for event in baseline_progress] == [1, 2]
     assert all(event.total == 2 for event in baseline_progress)
+
+
+def test_per_interaction_training_appends_interaction_log(tmp_path) -> None:
+    log_path = tmp_path / "interaction_log.jsonl"
+    adapter: AgentAdapter = SimpleAgentAdapter(memory_path=tmp_path / "memory.jsonl")
+    runner = ExperimentRunner(
+        adapter,
+        ExperimentConfig(interaction_log_path=log_path),
+    )
+    train_tasks = load_jsonl_tasks("data/m1_train.jsonl")[:2]
+    eval_tasks = load_jsonl_tasks("data/m1_eval.jsonl")[:1]
+
+    summary = runner.run_self_evolution(train_tasks, eval_tasks)
+
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert '"generated_memory"' in lines[0]
+    assert '"added_memory"' in lines[0]
+    assert '"added_memory_ids"' in lines[0]
+    assert '"skipped_memory"' in lines[0]
+    assert '"skipped_memory_ids"' in lines[0]
+    assert summary.learned_rules
+    assert len(summary.learned_rules) == summary.memory_count
 
 
 def test_experiment_runner_without_progress_callback_still_runs(tmp_path) -> None:
@@ -72,3 +106,18 @@ def test_experiment_runner_without_progress_callback_still_runs(tmp_path) -> Non
     baseline = runner.run_no_memory(eval_tasks)
 
     assert baseline.total == 1
+
+
+def test_batch_memory_update_policy_still_runs(tmp_path) -> None:
+    adapter: AgentAdapter = SimpleAgentAdapter(memory_path=tmp_path / "memory.jsonl")
+    runner = ExperimentRunner(
+        adapter,
+        ExperimentConfig(memory_update_policy="batch"),
+    )
+    train_tasks = load_jsonl_tasks("data/m1_train.jsonl")[:2]
+    eval_tasks = load_jsonl_tasks("data/m1_eval.jsonl")[:2]
+
+    summary = runner.run_self_evolution(train_tasks, eval_tasks)
+
+    assert summary.memory_update_policy == "batch"
+    assert summary.train_records

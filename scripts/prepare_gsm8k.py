@@ -20,6 +20,11 @@ GSM8K_BASE_URL = (
     "grade_school_math/data"
 )
 ANSWER_RE = re.compile(r"####\s*(.+)\s*$")
+DATASET_NAME = "gsm8k"
+DOMAIN = "math"
+TASK_TYPE = "grade_school_math_word_problem"
+SOURCE = "openai/grade-school-math"
+DEFAULT_TAGS = [DOMAIN, DATASET_NAME]
 
 
 def parse_final_answer(answer_text: str) -> str:
@@ -79,13 +84,16 @@ def convert_rows(rows: list[dict[str, Any]], split: str) -> list[dict[str, Any]]
                 "id": f"gsm8k_{split}_{index:04d}",
                 "question": question,
                 "answer": parse_final_answer(answer_text),
-                "tags": ["gsm8k", "math_word_problem"],
+                "tags": list(DEFAULT_TAGS),
                 "metadata": {
-                    "kind": "gsm8k",
-                    "dataset": "gsm8k",
-                    "source": "openai/grade-school-math",
+                    "dataset": DATASET_NAME,
+                    "domain": DOMAIN,
+                    "task_type": TASK_TYPE,
+                    "source": SOURCE,
                     "split": split,
+                    "sample_index": index,
                     "rationale": answer_text,
+                    "kind": DATASET_NAME,
                 },
             }
         )

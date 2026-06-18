@@ -51,6 +51,15 @@ class RunResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class TrainingRecord:
+    result: RunResult
+    generated_memory_ids: tuple[str, ...] = ()
+    added_memory_ids: tuple[str, ...] = ()
+    skipped_memory_ids: tuple[str, ...] = ()
+    skipped_duplicate: int = 0
+
+
 @dataclass(frozen=True)
 class AttackCase:
     task: Task

@@ -20,7 +20,7 @@ from safe_se_agent.core.experiment import (
 )
 from safe_se_agent.core.io import load_jsonl_tasks
 from safe_se_agent.core.memory import memory_to_dict
-from safe_se_agent.core.types import RunResult
+from safe_se_agent.core.types import RunResult, TrainingRecord
 from safe_se_agent.llm.offline import OfflineLLMClient
 from safe_se_agent.llm.openai_compatible import LLMConnectionError, OpenAICompatibleClient
 
@@ -143,10 +143,20 @@ def result_to_dict(result: RunResult) -> dict[str, object]:
         "response": result.raw_response,
         "tags": list(task.tags),
         "metadata": task.metadata,
+        "run_metadata": result.metadata,
         "token_count": result.token_count,
         "latency_s": result.latency_s,
         "steps": result.steps,
     }
+
+
+def train_record_to_dict(record: TrainingRecord) -> dict[str, object]:
+    data = result_to_dict(record.result)
+    data["generated_memory_ids"] = list(record.generated_memory_ids)
+    data["added_memory_ids"] = list(record.added_memory_ids)
+    data["skipped_memory_ids"] = list(record.skipped_memory_ids)
+    data["skipped_duplicate"] = record.skipped_duplicate
+    return data
 
 
 def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
@@ -172,6 +182,10 @@ def write_artifacts(
         )
     write_jsonl(run_dir / "baseline_results.jsonl", [result_to_dict(item) for item in baseline.results])
     write_jsonl(
+        run_dir / "train_results.jsonl",
+        [train_record_to_dict(item) for item in self_evo.train_records or []],
+    )
+    write_jsonl(
         run_dir / "self_evolution_results.jsonl",
         [result_to_dict(item) for item in self_evo.results],
     )
@@ -189,6 +203,10 @@ def write_artifacts(
             "total": self_evo.total,
             "retrieval_hit_rate": self_evo.retrieval_hit_rate,
             "memory_count": self_evo.memory_count,
+            "memory_update_policy": self_evo.memory_update_policy,
+            "num_memory_generated": self_evo.num_memory_generated,
+            "num_memory_added": self_evo.num_memory_added,
+            "num_memory_skipped_duplicate": self_evo.num_memory_skipped_duplicate,
         },
         "accuracy_delta": self_evo.accuracy - baseline.accuracy,
         "learned_rules": [memory_to_dict(rule) for rule in self_evo.learned_rules],
@@ -213,6 +231,12 @@ def main() -> None:
     parser.add_argument("--train", default=str(ROOT / "data" / "gsm8k_train_small.jsonl"))
     parser.add_argument("--eval", default=str(ROOT / "data" / "gsm8k_eval_small.jsonl"))
     parser.add_argument("--retrieve-k", type=int, default=3)
+    parser.add_argument(
+        "--memory-update-policy",
+        choices=["per_interaction", "batch"],
+        default="per_interaction",
+        help="per_interaction 每个训练交互后立即反思写入；batch 保留旧的批量反思协议。",
+    )
     parser.add_argument("--run-id", default="m1_demo")
     parser.add_argument("--no-progress", action="store_true", help="关闭进度显示，只输出最终结果。")
     parser.add_argument(
@@ -227,6 +251,7 @@ def main() -> None:
     eval_tasks = load_jsonl_tasks(args.eval)
     run_dir = ROOT / "runs" / args.run_id
     memory_path = run_dir / "memory.jsonl"
+    interaction_log_path = run_dir / "interaction_log.jsonl"
     progress = None if args.no_progress else ConsoleProgress(mode=args.progress)
     try:
         adapter = build_adapter(args.mode, retrieve_k=args.retrieve_k, memory_path=memory_path)
@@ -237,6 +262,8 @@ def main() -> None:
         adapter,
         ExperimentConfig(
             retrieve_k=args.retrieve_k,
+            memory_update_policy=args.memory_update_policy,
+            interaction_log_path=interaction_log_path,
             progress_callback=progress,
         ),
     )
@@ -245,8 +272,10 @@ def main() -> None:
     print(f"- mode: {args.mode}")
     print(f"- train/eval: {len(train_tasks)}/{len(eval_tasks)}")
     print(f"- retrieve_k: {args.retrieve_k}")
+    print(f"- memory_update_policy: {args.memory_update_policy}")
     print(f"- run_dir: {run_dir}")
     print(f"- memory_path: {memory_path}")
+    print(f"- interaction_log_path: {interaction_log_path}")
 
     start = time.perf_counter()
     try:
@@ -280,7 +309,9 @@ def main() -> None:
     print(f"总耗时: {elapsed:.2f}s")
     print("实验产物:")
     print(f"- {memory_path}")
+    print(f"- {interaction_log_path}")
     print(f"- {run_dir / 'baseline_results.jsonl'}")
+    print(f"- {run_dir / 'train_results.jsonl'}")
     print(f"- {run_dir / 'self_evolution_results.jsonl'}")
     print(f"- {run_dir / 'summary.json'}")
 

@@ -11,10 +11,67 @@ from safe_se_agent.core.types import MemoryEntry, Task
 
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_]+")
+STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "be",
+    "before",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "the",
+    "then",
+    "to",
+    "when",
+    "with",
+}
+GENERIC_RULE_TOKENS = {
+    "answer",
+    "calculation",
+    "careful",
+    "comput",
+    "final",
+    "finaliz",
+    "intermediate",
+    "multi",
+    "problem",
+    "quantitie",
+    "step",
+    "verify",
+    "word",
+}
 
 
 def tokenize(text: str) -> set[str]:
     return {token.lower() for token in TOKEN_RE.findall(text)}
+
+
+def normalize_memory_text(text: str) -> str:
+    return " ".join(_content_tokens(text))
+
+
+def _content_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for raw in TOKEN_RE.findall(text.lower()):
+        if raw in STOPWORDS or len(raw) <= 2:
+            continue
+        token = raw
+        for suffix in ("ing", "ed", "ly", "s"):
+            if len(token) > len(suffix) + 4 and token.endswith(suffix):
+                token = token[: -len(suffix)]
+                break
+        tokens.append(token)
+    return tokens
 
 
 class MemoryStore:
@@ -29,10 +86,16 @@ class MemoryStore:
         if self.backend:
             self.backend.clear()
 
-    def add(self, entries: list[MemoryEntry]) -> None:
-        self._entries.extend(entries)
+    def add(self, entries: list[MemoryEntry]) -> list[MemoryEntry]:
+        added: list[MemoryEntry] = []
+        for entry in entries:
+            if self._is_duplicate(entry, added):
+                continue
+            added.append(entry)
+        self._entries.extend(added)
         if self.backend:
-            self.backend.append(entries)
+            self.backend.append(added)
+        return added
 
     def save(self) -> None:
         if self.backend:
@@ -60,6 +123,26 @@ class MemoryStore:
             lexical = len(task_tokens & entry_tokens) / len(task_tokens | entry_tokens)
 
         return entry.priority * (2.0 * tag_overlap + lexical)
+
+    def _is_duplicate(self, candidate: MemoryEntry, pending: list[MemoryEntry] | None = None) -> bool:
+        candidate_text = normalize_memory_text(candidate.text)
+        if not candidate_text:
+            return True
+        candidate_tokens = tokenize(candidate_text)
+        for entry in [*self._entries, *(pending or [])]:
+            entry_text = normalize_memory_text(entry.text)
+            if candidate_text == entry_text:
+                return True
+            entry_tokens = tokenize(entry_text)
+            if not candidate_tokens or not entry_tokens:
+                continue
+            overlap = len(candidate_tokens & entry_tokens) / len(candidate_tokens | entry_tokens)
+            containment = len(candidate_tokens & entry_tokens) / min(len(candidate_tokens), len(entry_tokens))
+            generic_overlap = len((candidate_tokens & entry_tokens) & GENERIC_RULE_TOKENS)
+            tag_overlap = bool(set(candidate.tags) & set(entry.tags))
+            if overlap >= 0.72 or containment >= 0.82 or (tag_overlap and generic_overlap >= 7):
+                return True
+        return False
 
 
 class MemoryBackend(ABC):

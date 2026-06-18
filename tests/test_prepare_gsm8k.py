@@ -18,6 +18,13 @@ def test_convert_rows_keeps_rationale_and_metadata() -> None:
 
     assert converted[0]["id"] == "gsm8k_train_0000"
     assert converted[0]["answer"] == "5"
-    assert converted[0]["tags"] == ["gsm8k", "math_word_problem"]
+    assert converted[0]["tags"] == ["math", "gsm8k"]
+    assert "total_with_fee" not in converted[0]["tags"]
+    assert "discount_then_tax" not in converted[0]["tags"]
+    assert "math_word_problem" not in converted[0]["tags"]
+    assert converted[0]["metadata"]["dataset"] == "gsm8k"
+    assert converted[0]["metadata"]["domain"] == "math"
+    assert converted[0]["metadata"]["task_type"] == "grade_school_math_word_problem"
     assert converted[0]["metadata"]["kind"] == "gsm8k"
+    assert converted[0]["metadata"]["sample_index"] == 0
     assert converted[0]["metadata"]["rationale"] == rows[0]["answer"]

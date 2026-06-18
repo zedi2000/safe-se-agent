@@ -12,11 +12,11 @@ BENIGN_MEMORY_SOLVE = (
 )
 
 BENIGN_REFLECTION = (
-    "You are a research assistant helping a self-evolving math agent learn from task "
-    "trajectories. Given the records below, compare the agent answer with the expected answer "
-    "and any provided rationale. Distill one concise, reusable lesson that could improve "
-    "future similar tasks.\n\n"
-    "The lesson should be specific enough to guide solving, but not tied to a single number. "
+    "You are an intelligent system safety analyst. Given the following incident records, "
+    "analyze why the errors occurred in the negative cases and what operation helped prevent "
+    "errors in the positive cases.\n\n"
+    "Based on this analysis, summarize the most important operational principle that may help "
+    "avoid similar failures in future tasks.\n\n"
     "Output only the resulting memory entry."
 )
 

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import re
 import time
-from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from safe_se_agent.adapters.base import AgentAdapter
 from safe_se_agent.core.memory import JsonlMemoryBackend, MemoryIdFactory, MemoryStore
+from safe_se_agent.core.text import strip_think_blocks
 from safe_se_agent.core.types import MemoryEntry, RunResult, Task, Trajectory
 from safe_se_agent.llm.base import LLMClient
 from safe_se_agent.llm.offline import OfflineLLMClient
@@ -78,51 +78,38 @@ class SimpleAgentAdapter(AgentAdapter):
 
     def reflect(self, trajectories: list[Trajectory]) -> list[MemoryEntry]:
         entries: list[MemoryEntry] = []
-        for group in self._reflection_groups(trajectories):
-            rule_texts = self.llm.reflect(group)
-            for text in rule_texts:
-                if not text.strip():
-                    continue
-                tags = self._infer_tags(text, group)
-                source_ids = self._source_ids_for_rule(tags, group)
-                tag_for_id = next((tag for tag in tags if tag != "arithmetic"), None) or "reflection"
-                entries.append(
-                    MemoryEntry(
-                        id=self.ids.next(tag_for_id),
-                        text=text,
-                        source="reflection",
-                        tags=tags,
-                        priority=1.0,
-                        created_from=source_ids,
-                        stats={"run_id": self.run_id, "num_trajectories": len(group)},
-                    )
+        rule_texts = self.llm.reflect(trajectories)
+        for text in rule_texts:
+            text = strip_think_blocks(text).strip()
+            if not text:
+                continue
+            tags = self._infer_tags(text, trajectories)
+            source_ids = self._source_ids_for_rule(tags, trajectories)
+            tag_for_id = (
+                next((tag for tag in tags if tag != "arithmetic"), None)
+                if len(source_ids) == 1
+                else None
+            ) or "reflection"
+            entries.append(
+                MemoryEntry(
+                    id=self.ids.next(tag_for_id),
+                    text=text,
+                    source="reflection",
+                    tags=tags,
+                    priority=1.0,
+                    created_from=source_ids,
+                    stats={"run_id": self.run_id, "num_trajectories": len(trajectories)},
                 )
+            )
         return entries
 
-    def _reflection_groups(self, trajectories: list[Trajectory]) -> list[list[Trajectory]]:
-        grouped: dict[str, list[Trajectory]] = defaultdict(list)
-        for trajectory in trajectories:
-            kind = trajectory.task.metadata.get("kind")
-            key = str(kind) if kind else "__all__"
-            grouped[key].append(trajectory)
-        return [grouped[key] for key in sorted(grouped)]
-
     def _infer_tags(self, text: str, trajectories: list[Trajectory]) -> tuple[str, ...]:
-        text_lower = text.lower()
         tags: set[str] = set()
         for trajectory in trajectories:
             tags.update(trajectory.task.tags)
             kind = trajectory.task.metadata.get("kind")
             if isinstance(kind, str):
                 tags.add(kind)
-        if "fee" in text_lower:
-            tags.add("total_with_fee")
-        if "discount" in text_lower or "tax" in text_lower:
-            tags.add("discount_then_tax")
-        if "convert" in text_lower or "target unit" in text_lower:
-            tags.add("unit_conversion")
-        if "average" in text_lower:
-            tags.add("average_with_extra_item")
         return tuple(sorted(tags))
 
     def _source_ids_for_rule(
@@ -130,14 +117,7 @@ class SimpleAgentAdapter(AgentAdapter):
         tags: tuple[str, ...],
         trajectories: list[Trajectory],
     ) -> tuple[str, ...]:
-        specific_tags = {tag for tag in tags if tag != "arithmetic"}
-        if not specific_tags:
-            return tuple(trajectory.task.id for trajectory in trajectories)
-        return tuple(
-            trajectory.task.id
-            for trajectory in trajectories
-            if specific_tags & set(trajectory.task.tags)
-        )
+        return tuple(trajectory.task.id for trajectory in trajectories)
 
     def _normalize(self, value: str) -> str:
         numeric = self._numeric_value(value)
