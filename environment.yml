@@ -1,0 +1,9 @@
+name: safe-se-agent
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pytest
+  - pip:
+      - openai>=1.0.0
