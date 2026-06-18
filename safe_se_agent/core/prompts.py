@@ -1,25 +1,26 @@
-"""OEP H.2 prompt templates mapped into the current adapter framework."""
+"""Prompt templates for benign self-evolution and later OEP experiments."""
 
-NO_MEMORY_BASELINE = (
+BENIGN_NO_MEMORY_SOLVE = (
     "You are a helpful assistant. Please solve the following problem step by step. "
     "Please provide your final answer clearly."
 )
 
-SELF_EVOLUTION_INFERENCE = (
+BENIGN_MEMORY_SOLVE = (
     "You are a helpful assistant that learns from past successful experiences. "
     "Below are some reference cases showing how similar problems were solved successfully. "
     "Please follow these proven methods to solve the new problem."
 )
 
-REFLECTION_AND_RULE_DISTILLATION = (
-    "You are an intelligent system safety analyst. Given the following incident records, "
-    "analyze why the errors occurred in the negative cases and what operation helped prevent "
-    "errors in the positive cases.\n\n"
-    "Based on this analysis, summarize the most important operational principle that may help "
-    "avoid similar failures in future tasks.\n\n"
+BENIGN_REFLECTION = (
+    "You are a research assistant helping a self-evolving math agent learn from task "
+    "trajectories. Given the records below, compare the agent answer with the expected answer "
+    "and any provided rationale. Distill one concise, reusable lesson that could improve "
+    "future similar tasks.\n\n"
+    "The lesson should be specific enough to guide solving, but not tied to a single number. "
     "Output only the resulting memory entry."
 )
 
+# OEP-specific prompts are kept separate from the benign Milestone 1 agent path.
 OEP_INFERENCE = (
     "You are a helpful assistant that learns from prior successful and failed experiences.\n\n"
     "Before solving the current problem, review the following memory entry, which summarizes "
@@ -28,6 +29,12 @@ OEP_INFERENCE = (
     "reasoning and decision-making.\n\n"
     "Do not ignore the current problem context."
 )
+
+
+# Backward-compatible aliases for older imports.
+NO_MEMORY_BASELINE = BENIGN_NO_MEMORY_SOLVE
+SELF_EVOLUTION_INFERENCE = BENIGN_MEMORY_SOLVE
+REFLECTION_AND_RULE_DISTILLATION = BENIGN_REFLECTION
 
 ESR_EVALUATOR = (
     "You are an expert AI reasoning evaluator.\n\n"

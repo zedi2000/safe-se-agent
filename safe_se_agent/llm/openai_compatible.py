@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 
 from safe_se_agent.core.prompts import (
-    NO_MEMORY_BASELINE,
-    REFLECTION_AND_RULE_DISTILLATION,
-    SELF_EVOLUTION_INFERENCE,
+    BENIGN_MEMORY_SOLVE,
+    BENIGN_NO_MEMORY_SOLVE,
+    BENIGN_REFLECTION,
 )
 from safe_se_agent.core.types import MemoryEntry, Task, Trajectory
 
@@ -34,7 +34,7 @@ class OpenAICompatibleClient:
 
     def solve(self, task: Task, memories: list[MemoryEntry]) -> tuple[str, str, int | None]:
         memory_block = "\n".join(f"- {memory.text}" for memory in memories) or "(none)"
-        system_prompt = SELF_EVOLUTION_INFERENCE if memories else NO_MEMORY_BASELINE
+        system_prompt = BENIGN_MEMORY_SOLVE if memories else BENIGN_NO_MEMORY_SOLVE
         prompt = (
             f"Reference memories:\n{memory_block}\n\n"
             f"Task: {task.question}\n"
@@ -65,11 +65,12 @@ class OpenAICompatibleClient:
                     f"Agent answer: {trajectory.answer}\n"
                     f"Expected answer: {trajectory.expected_answer}\n"
                     f"Correct: {trajectory.correct}\n"
-                    f"Tags: {', '.join(trajectory.task.tags)}"
+                    f"Tags: {', '.join(trajectory.task.tags)}\n"
+                    f"Gold rationale: {trajectory.task.metadata.get('rationale', '(none)')}"
                 )
             )
         prompt = (
-            REFLECTION_AND_RULE_DISTILLATION
+            BENIGN_REFLECTION
             + "\n\n"
             "For this implementation, return one concise memory entry. "
             "Do not include bullets, labels, or markdown.\n\n"

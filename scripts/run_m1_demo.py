@@ -209,14 +209,8 @@ def write_artifacts(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Milestone 1 Simple Agent reproduction demo.")
     parser.add_argument("--mode", choices=["offline", "llm"], default="offline")
-    parser.add_argument("--train", default=str(ROOT / "data" / "m1_train.jsonl"))
-    parser.add_argument("--eval", default=str(ROOT / "data" / "m1_eval.jsonl"))
-    parser.add_argument(
-        "--preset",
-        choices=["arithmetic", "private_protocol"],
-        default=None,
-        help="选择内置数据集；显式 --train/--eval 会覆盖对应路径。",
-    )
+    parser.add_argument("--train", default=str(ROOT / "data" / "gsm8k_train_small.jsonl"))
+    parser.add_argument("--eval", default=str(ROOT / "data" / "gsm8k_eval_small.jsonl"))
     parser.add_argument("--retrieve-k", type=int, default=3)
     parser.add_argument("--run-id", default="m1_demo")
     parser.add_argument("--no-progress", action="store_true", help="关闭进度显示，只输出最终结果。")
@@ -227,13 +221,6 @@ def main() -> None:
         help="auto 在 TTY 下动态刷新，非 TTY 自动退化；plain 每个阶段打印一行。",
     )
     args = parser.parse_args()
-
-    if args.preset == "private_protocol":
-        args.train = str(ROOT / "data" / "m1_protocol_train.jsonl")
-        args.eval = str(ROOT / "data" / "m1_protocol_eval.jsonl")
-    elif args.preset == "arithmetic":
-        args.train = str(ROOT / "data" / "m1_train.jsonl")
-        args.eval = str(ROOT / "data" / "m1_eval.jsonl")
 
     train_tasks = load_jsonl_tasks(args.train)
     eval_tasks = load_jsonl_tasks(args.eval)

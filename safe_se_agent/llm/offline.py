@@ -54,6 +54,11 @@ class OfflineLLMClient:
                     "For average_with_extra_item arithmetic tasks, include every listed item "
                     "and the extra item before computing the average."
                 )
+            elif kind == "gsm8k":
+                rules.append(
+                    "For GSM8K math word problems, identify the quantities, follow the gold "
+                    "rationale style step by step, and return the final numeric answer."
+                )
             else:
                 rules.append(
                     f"For {kind} tasks, compare the failed answer with the expected answer "
@@ -69,6 +74,8 @@ class OfflineLLMClient:
     def _solve_task(self, task: Task, has_rule: bool) -> str:
         kind = str(task.metadata.get("kind", ""))
         data = task.metadata
+        if data.get("dataset") == "gsm8k":
+            return str(task.metadata.get("baseline_answer", "0"))
         if kind == "total_with_fee":
             subtotal = self._num(data, "quantity") * self._num(data, "unit_price")
             total = subtotal + self._num(data, "fee") if has_rule else subtotal
