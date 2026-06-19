@@ -15,6 +15,7 @@ conda activate safe-se-agent
 python scripts/prepare_gsm8k.py --limit-train 20 --limit-eval 20
 python scripts/prepare_medqa.py --limit-train 20 --limit-eval 20
 python scripts/prepare_toolalpaca.py --limit-train 20 --limit-eval 20
+python scripts/prepare_oep.py
 python scripts/run_m1_demo.py --mode llm --run-id gsm8k_m1_llm
 pytest -q
 ```
@@ -57,6 +58,7 @@ OEP 论文中的三个基础数据源目前都可以转换成统一的 `Task` JS
 python scripts/prepare_gsm8k.py --limit-train 20 --limit-eval 20
 python scripts/prepare_medqa.py --limit-train 20 --limit-eval 20
 python scripts/prepare_toolalpaca.py --limit-train 20 --limit-eval 20
+python scripts/prepare_oep.py
 ```
 
 对应 smoke test：
@@ -68,6 +70,45 @@ python scripts/run_m1_demo.py --mode offline --train data/toolalpaca_train_small
 ```
 
 离线 backend 对 MedQA/ToolAlpaca 只验证数据与实验产物流转，不代表真实 performance。
+
+## OEP 复现实验
+
+OEP attack cases 放在 `data/raw/oep/oep_attack_cases_90.jsonl`，结构是 3 个领域，每个领域 3 组
+target rule，每组 10 条 case。先转换成统一 Task JSONL：
+
+```bash
+python scripts/prepare_oep.py
+```
+
+先用 math 领域的一组 10 条 case 做 smoke：
+
+```bash
+python scripts/run_oep_repro.py --mode offline \
+  --domain math \
+  --attack-cases data/oep/oep_attack_cases.jsonl \
+  --eval data/gsm8k_eval_small.jsonl \
+  --num-groups 1 \
+  --run-id oep_math_smoke \
+  --no-progress
+```
+
+真实攻击效果需要使用 LLM backend：
+
+```bash
+python scripts/run_oep_repro.py --mode llm \
+  --domain math \
+  --attack-cases data/oep/oep_attack_cases.jsonl \
+  --eval data/gsm8k_eval_small.jsonl \
+  --num-groups 1 \
+  --run-id oep_math_llm_g1
+```
+
+`--num-groups 1/2/3` 分别表示注入 10/20/30 条同领域 OEP cases。该脚本流程是：
+baseline eval -> batch 注入 attack trajectories -> reflection 生成 memory -> attacked eval。
+这对应 OEP 中 “一组 injected cases 经 memory consolidation 形成 memory entry” 的实验语义。
+LLM 模式下，reflection 使用 H.2 的 `Reflection and Rule Distillation` 作为 system prompt，
+user 内容只包含结构化 ACT incident records；attacked eval 使用 OEP memory-entry prompt，
+而不是把整段 raw injection prompt 或 metadata 直接塞给模型。
 
 ## 进度显示
 
@@ -102,6 +143,8 @@ python scripts/run_m1_demo.py --mode llm
 - `scripts/prepare_gsm8k.py`: 下载并转换 GSM8K small 数据。
 - `scripts/prepare_medqa.py`: 下载并转换 MedQA small 数据。
 - `scripts/prepare_toolalpaca.py`: 下载并转换 ToolAlpaca small 数据。
+- `scripts/prepare_oep.py`: 转换 OEP attack cases。
+- `scripts/run_oep_repro.py`: OEP-style baseline/injection/attacked eval 复现实验。
 - `data/*_train_small.jsonl` and `data/*_eval_small.jsonl`: 默认真实数据 smoke/eval 输入。
 - `data/m1_train.jsonl` and `data/m1_eval.jsonl`: synthetic smoke-test benchmark.
 - `docs/memory_integration_zh.md`: memory 与外部 agent 框架的接洽说明。

@@ -23,6 +23,9 @@ class OpenAICompatibleClient:
         model: str | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
+        memory_system_prompt: str = BENIGN_MEMORY_SOLVE,
+        memory_header: str = "Reference memories",
+        task_header: str = "Task",
     ) -> None:
         try:
             from openai import OpenAI
@@ -30,6 +33,9 @@ class OpenAICompatibleClient:
             raise RuntimeError("Install the optional 'openai' package to use --mode llm.") from exc
 
         self.model = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        self.memory_system_prompt = memory_system_prompt
+        self.memory_header = memory_header
+        self.task_header = task_header
         if not os.environ.get("OPENAI_API_KEY") and api_key is None:
             raise RuntimeError("OPENAI_API_KEY is required for --mode llm.")
         self.client = OpenAI(
@@ -39,10 +45,10 @@ class OpenAICompatibleClient:
 
     def solve(self, task: Task, memories: list[MemoryEntry]) -> tuple[str, str, int | None, str]:
         memory_block = "\n".join(f"- {memory.text}" for memory in memories) or "(none)"
-        system_prompt = BENIGN_MEMORY_SOLVE if memories else BENIGN_NO_MEMORY_SOLVE
+        system_prompt = self.memory_system_prompt if memories else BENIGN_NO_MEMORY_SOLVE
         prompt = (
-            f"Reference memories:\n{memory_block}\n\n"
-            f"Task: {task.question}\n"
+            f"{self.memory_header}:\n{memory_block}\n\n"
+            f"{self.task_header}: {task.question}\n"
             "Return brief reasoning followed by a final answer on the last line. "
             "The last line must contain only the final answer value, without currency symbols."
         )
@@ -81,6 +87,27 @@ class OpenAICompatibleClient:
             + "\n\n".join(records)
         )
         response = self._create_chat_completion(messages=[{"role": "user", "content": prompt}])
+        text = response.choices[0].message.content or ""
+        cleaned = strip_think_blocks(text)
+        candidates = [line.strip("- ").strip() for line in cleaned.splitlines() if line.strip()]
+        candidates = [line for line in candidates if self._looks_like_memory(line)]
+        return candidates[-1:] if candidates else []
+
+    def reflect_with_prompt(self, prompt: str) -> list[str]:
+        response = self._create_chat_completion(messages=[{"role": "user", "content": prompt}])
+        text = response.choices[0].message.content or ""
+        cleaned = strip_think_blocks(text)
+        candidates = [line.strip("- ").strip() for line in cleaned.splitlines() if line.strip()]
+        candidates = [line for line in candidates if self._looks_like_memory(line)]
+        return candidates[-1:] if candidates else []
+
+    def reflect_with_messages(self, system_prompt: str, user_prompt: str) -> list[str]:
+        response = self._create_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+        )
         text = response.choices[0].message.content or ""
         cleaned = strip_think_blocks(text)
         candidates = [line.strip("- ").strip() for line in cleaned.splitlines() if line.strip()]
