@@ -58,6 +58,9 @@ class TrainingRecord:
     added_memory_ids: tuple[str, ...] = ()
     skipped_memory_ids: tuple[str, ...] = ()
     skipped_duplicate: int = 0
+    reflection_triggered: bool = False
+    trigger_reason: str | None = None
+    reflection_window_task_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

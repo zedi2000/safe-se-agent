@@ -40,6 +40,15 @@ python scripts/run_m1_demo.py --mode offline \
   --run-id synthetic_smoke
 ```
 
+默认 memory 更新策略是 `sliding_window`：训练交互会逐条写入 `interaction_log.jsonl`，
+但只有当前样本答错时才对最近窗口做 reflection 并尝试写入 memory。旧的
+`per_interaction` 和 `batch` 策略仍保留，用作 ablation。
+
+答案评分会做轻量 dataset-aware normalization：GSM8K 使用数值归一化，MedQA 会把
+`D**`、`**D**`、`Answer: D` 等输出归一到选项字母。ToolAlpaca 除最终答案匹配外，还会在
+`run_metadata` 中记录 `tool_step_count`、`expected_tool_step_count` 和 `tool_step_delta`；
+这对应 OEP 中 tool-use 场景更关注冗余工具调用和步骤膨胀的评测方式。
+
 ## 真实数据集准备
 
 OEP 论文中的三个基础数据源目前都可以转换成统一的 `Task` JSONL schema：

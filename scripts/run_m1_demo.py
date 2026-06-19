@@ -156,6 +156,9 @@ def train_record_to_dict(record: TrainingRecord) -> dict[str, object]:
     data["added_memory_ids"] = list(record.added_memory_ids)
     data["skipped_memory_ids"] = list(record.skipped_memory_ids)
     data["skipped_duplicate"] = record.skipped_duplicate
+    data["reflection_triggered"] = record.reflection_triggered
+    data["trigger_reason"] = record.trigger_reason
+    data["reflection_window_task_ids"] = list(record.reflection_window_task_ids)
     return data
 
 
@@ -233,10 +236,13 @@ def main() -> None:
     parser.add_argument("--retrieve-k", type=int, default=3)
     parser.add_argument(
         "--memory-update-policy",
-        choices=["per_interaction", "batch"],
-        default="per_interaction",
-        help="per_interaction 每个训练交互后立即反思写入；batch 保留旧的批量反思协议。",
+        choices=["sliding_window", "per_interaction", "batch"],
+        default="sliding_window",
+        help="sliding_window 默认滑动窗口反思；per_interaction 每题反思；batch 保留旧批量协议。",
     )
+    parser.add_argument("--reflection-window-size", type=int, default=5)
+    parser.add_argument("--reflection-window-stride", type=int, default=1)
+    parser.add_argument("--min-failures-in-window", type=int, default=1)
     parser.add_argument("--run-id", default="m1_demo")
     parser.add_argument("--no-progress", action="store_true", help="关闭进度显示，只输出最终结果。")
     parser.add_argument(
@@ -263,6 +269,9 @@ def main() -> None:
         ExperimentConfig(
             retrieve_k=args.retrieve_k,
             memory_update_policy=args.memory_update_policy,
+            reflection_window_size=args.reflection_window_size,
+            reflection_window_stride=args.reflection_window_stride,
+            min_failures_in_window=args.min_failures_in_window,
             interaction_log_path=interaction_log_path,
             progress_callback=progress,
         ),
@@ -273,6 +282,12 @@ def main() -> None:
     print(f"- train/eval: {len(train_tasks)}/{len(eval_tasks)}")
     print(f"- retrieve_k: {args.retrieve_k}")
     print(f"- memory_update_policy: {args.memory_update_policy}")
+    if args.memory_update_policy == "sliding_window":
+        print(
+            "- reflection_window: "
+            f"size={args.reflection_window_size}, stride={args.reflection_window_stride}, "
+            f"min_failures={args.min_failures_in_window}"
+        )
     print(f"- run_dir: {run_dir}")
     print(f"- memory_path: {memory_path}")
     print(f"- interaction_log_path: {interaction_log_path}")

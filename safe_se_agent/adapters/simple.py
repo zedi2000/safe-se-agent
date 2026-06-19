@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import re
 import time
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from safe_se_agent.adapters.base import AgentAdapter
 from safe_se_agent.core.memory import JsonlMemoryBackend, MemoryIdFactory, MemoryStore
+from safe_se_agent.core.scoring import normalize_answer, score_answer
 from safe_se_agent.core.text import strip_think_blocks
 from safe_se_agent.core.types import MemoryEntry, RunResult, Task, Trajectory
 from safe_se_agent.llm.base import LLMClient
@@ -52,21 +51,28 @@ class SimpleAgentAdapter(AgentAdapter):
         else:
             answer, reasoning, token_count = solve_output
             raw_response = reasoning
-        correct = self._normalize(answer) == self._normalize(task.answer)
+        score = score_answer(answer, task, raw_response=raw_response)
         latency_s = time.perf_counter() - start
+        score_metadata = {
+            "normalized_predicted_answer": score.normalized_prediction,
+            "normalized_gold_answer": score.normalized_gold,
+            "score_method": score.method,
+            **score.metadata,
+        }
         trajectory = Trajectory(
             task=task,
             answer=answer,
-            correct=correct,
+            correct=score.correct,
             reasoning=reasoning,
             raw_response=raw_response,
             retrieved_memory_ids=tuple(memory.id for memory in selected_memories),
             expected_answer=task.answer,
+            metadata=score_metadata.copy(),
         )
         return RunResult(
             task_id=task.id,
             answer=answer,
-            correct=correct,
+            correct=score.correct,
             reasoning=reasoning,
             trajectory=trajectory,
             raw_response=raw_response,
@@ -74,6 +80,7 @@ class SimpleAgentAdapter(AgentAdapter):
             token_count=token_count,
             latency_s=latency_s,
             steps=1,
+            metadata=score_metadata,
         )
 
     def reflect(self, trajectories: list[Trajectory]) -> list[MemoryEntry]:
@@ -120,24 +127,7 @@ class SimpleAgentAdapter(AgentAdapter):
         return tuple(trajectory.task.id for trajectory in trajectories)
 
     def _normalize(self, value: str) -> str:
-        numeric = self._numeric_value(value)
-        if numeric is not None:
-            normalized = numeric.normalize()
-            if normalized == normalized.to_integral():
-                return str(int(normalized))
-            return format(normalized, "f").rstrip("0").rstrip(".")
-        return value.strip().lower().rstrip(".")
-
-    def _numeric_value(self, value: str) -> Decimal | None:
-        text = value.strip().replace(",", "")
-        matches = re.findall(r"[-+]?\$?\d+(?:\.\d+)?", text)
-        if not matches:
-            return None
-        token = matches[-1].replace("$", "")
-        try:
-            return Decimal(token)
-        except InvalidOperation:
-            return None
+        return normalize_answer(value)
 
     def add_memory(self, entries: list[MemoryEntry]) -> None:
         self.memory.add(entries)

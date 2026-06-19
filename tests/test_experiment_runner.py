@@ -18,17 +18,16 @@ def test_self_evolution_improves_offline_accuracy(tmp_path) -> None:
     assert baseline.correct == 0
     assert self_evo.correct == len(eval_tasks)
     assert self_evo.learned_rules
-    assert self_evo.memory_update_policy == "per_interaction"
+    assert self_evo.memory_update_policy == "sliding_window"
     assert self_evo.train_records
     assert self_evo.num_memory_generated >= self_evo.num_memory_added
     assert self_evo.num_memory_added == self_evo.memory_count
     assert self_evo.num_memory_skipped_duplicate >= 0
-    assert {rule.tags[1] for rule in self_evo.learned_rules} >= {
-        "average_with_extra_item",
-        "discount_then_tax",
-        "total_with_fee",
-        "unit_conversion",
-    }
+    learned_text = "\n".join(rule.text for rule in self_evo.learned_rules)
+    assert "average_with_extra_item" in learned_text
+    assert "discount_then_tax" in learned_text
+    assert "total_with_fee" in learned_text
+    assert "unit_conversion" in learned_text
     assert self_evo.retrieval_hit_rate == 1.0
 
     write_artifacts(tmp_path, baseline, self_evo)
@@ -41,7 +40,7 @@ def test_self_evolution_improves_offline_accuracy(tmp_path) -> None:
     assert '"reasoning"' in first_result
     assert '"response"' in first_result
     summary = (tmp_path / "summary.json").read_text(encoding="utf-8")
-    assert '"memory_update_policy": "per_interaction"' in summary
+    assert '"memory_update_policy": "sliding_window"' in summary
     assert '"num_memory_generated"' in summary
     assert '"num_memory_added"' in summary
 
@@ -66,7 +65,7 @@ def test_experiment_runner_emits_progress_events(tmp_path) -> None:
     assert "memory_write" in stages
     assert "retrieve" in stages
     assert "self_evo_solve" in stages
-    assert stages.count("reflect") >= 2
+    assert stages.count("reflect") >= 1
 
     baseline_progress = [
         event for event in events if event.stage == "baseline_solve" and event.status == "progress"
@@ -80,7 +79,7 @@ def test_per_interaction_training_appends_interaction_log(tmp_path) -> None:
     adapter: AgentAdapter = SimpleAgentAdapter(memory_path=tmp_path / "memory.jsonl")
     runner = ExperimentRunner(
         adapter,
-        ExperimentConfig(interaction_log_path=log_path),
+        ExperimentConfig(memory_update_policy="per_interaction", interaction_log_path=log_path),
     )
     train_tasks = load_jsonl_tasks("data/m1_train.jsonl")[:2]
     eval_tasks = load_jsonl_tasks("data/m1_eval.jsonl")[:1]
@@ -96,6 +95,30 @@ def test_per_interaction_training_appends_interaction_log(tmp_path) -> None:
     assert '"skipped_memory_ids"' in lines[0]
     assert summary.learned_rules
     assert len(summary.learned_rules) == summary.memory_count
+
+
+def test_sliding_window_training_logs_trigger_metadata(tmp_path) -> None:
+    log_path = tmp_path / "interaction_log.jsonl"
+    adapter: AgentAdapter = SimpleAgentAdapter(memory_path=tmp_path / "memory.jsonl")
+    runner = ExperimentRunner(
+        adapter,
+        ExperimentConfig(
+            interaction_log_path=log_path,
+            reflection_window_size=3,
+            reflection_window_stride=1,
+        ),
+    )
+    train_tasks = load_jsonl_tasks("data/m1_train.jsonl")[:3]
+    eval_tasks = load_jsonl_tasks("data/m1_eval.jsonl")[:1]
+
+    summary = runner.run_self_evolution(train_tasks, eval_tasks)
+
+    rows = log_path.read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 3
+    assert summary.memory_update_policy == "sliding_window"
+    assert any('"reflection_triggered": true' in row for row in rows)
+    assert any('"reflection_window_task_ids"' in row for row in rows)
+    assert any(record.reflection_triggered for record in summary.train_records or [])
 
 
 def test_experiment_runner_without_progress_callback_still_runs(tmp_path) -> None:

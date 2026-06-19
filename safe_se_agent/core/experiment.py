@@ -27,7 +27,11 @@ class ProgressEvent:
 @dataclass(frozen=True)
 class ExperimentConfig:
     retrieve_k: int = 3
-    memory_update_policy: Literal["per_interaction", "batch"] = "per_interaction"
+    memory_update_policy: Literal["sliding_window", "per_interaction", "batch"] = "sliding_window"
+    reflection_window_size: int = 5
+    reflection_window_stride: int = 1
+    reflection_trigger: Literal["incorrect_or_low_score"] = "incorrect_or_low_score"
+    min_failures_in_window: int = 1
     interaction_log_path: Path | None = None
     progress_callback: ProgressCallback | None = None
 
@@ -91,7 +95,164 @@ class ExperimentRunner:
         self._clear_interaction_log()
         if self.config.memory_update_policy == "batch":
             return self._run_self_evolution_batch(train_tasks, eval_tasks, run_id)
+        if self.config.memory_update_policy == "sliding_window":
+            return self._run_self_evolution_sliding_window(train_tasks, eval_tasks, run_id)
         return self._run_self_evolution_per_interaction(train_tasks, eval_tasks, run_id)
+
+    def _run_self_evolution_sliding_window(
+        self,
+        train_tasks: list[Task],
+        eval_tasks: list[Task],
+        run_id: str,
+    ) -> EvaluationSummary:
+        train_records: list[TrainingRecord] = []
+        train_window: list[Trajectory] = []
+        learned_rules: list[MemoryEntry] = []
+        num_memory_generated = 0
+        num_memory_added = 0
+        num_memory_skipped_duplicate = 0
+        last_reflection_index = 0
+
+        self._emit("train_solve", "start", "开始滑动窗口训练交互", 0, len(train_tasks))
+        for index, task in enumerate(train_tasks, start=1):
+            self._emit(
+                "retrieve",
+                "wait",
+                f"训练前检索 memory: {task.id}",
+                index - 1,
+                len(train_tasks),
+                task.id,
+            )
+            memories = self.adapter.retrieve(task, k=self.config.retrieve_k)
+            self._emit(
+                "retrieve",
+                "done",
+                f"训练前检索完成: {task.id}",
+                index,
+                len(train_tasks),
+                task.id,
+                {"retrieved_memory_ids": [memory.id for memory in memories]},
+            )
+            self._emit(
+                "train_solve",
+                "wait",
+                f"等待模型响应: {task.id}",
+                index - 1,
+                len(train_tasks),
+                task.id,
+            )
+            result = self.adapter.solve(task, memories=memories)
+            self._emit(
+                "train_solve",
+                "progress",
+                f"训练交互完成: {task.id}",
+                index,
+                len(train_tasks),
+                task.id,
+            )
+
+            train_window.append(result.trajectory)
+            window = train_window[-max(1, self.config.reflection_window_size) :]
+            trigger_reason = self._reflection_trigger_reason(result, window, index, last_reflection_index)
+            generated_rules: list[MemoryEntry] = []
+            generated_ids: tuple[str, ...] = ()
+            added_ids: tuple[str, ...] = ()
+            skipped_ids: tuple[str, ...] = ()
+            skipped_duplicate = 0
+            reflection_window_task_ids = tuple(trajectory.task.id for trajectory in window)
+
+            if trigger_reason:
+                self._emit(
+                    "reflect",
+                    "wait",
+                    f"正在反思滑动窗口: {task.id}",
+                    task_id=task.id,
+                    metadata={
+                        "trigger_reason": trigger_reason,
+                        "reflection_window_task_ids": list(reflection_window_task_ids),
+                    },
+                )
+                generated_rules = self.adapter.reflect(window)
+                for rule in generated_rules:
+                    rule.stats.setdefault("trigger_task_id", task.id)
+                    rule.stats.setdefault("trigger_reason", trigger_reason)
+                    rule.stats.setdefault("reflection_window_task_ids", list(reflection_window_task_ids))
+                generated_ids = tuple(rule.id for rule in generated_rules)
+                num_memory_generated += len(generated_rules)
+                self._emit(
+                    "reflect",
+                    "done",
+                    f"滑动窗口反思完成，生成 {len(generated_rules)} 条 memory: {task.id}",
+                    task_id=task.id,
+                    metadata={"generated_memory_ids": list(generated_ids)},
+                )
+
+                before_ids = {memory.id for memory in self.adapter.export_memory()}
+                self._emit("memory_write", "wait", f"正在写入 memory: {task.id}", task_id=task.id)
+                self.adapter.add_memory(generated_rules)
+                after_ids = {memory.id for memory in self.adapter.export_memory()}
+                added_ids = tuple(rule.id for rule in generated_rules if rule.id in after_ids - before_ids)
+                added_rules = [rule for rule in generated_rules if rule.id in added_ids]
+                skipped_ids = tuple(rule.id for rule in generated_rules if rule.id not in added_ids)
+                skipped_duplicate = len(generated_rules) - len(added_ids)
+                learned_rules.extend(added_rules)
+                num_memory_added += len(added_ids)
+                num_memory_skipped_duplicate += skipped_duplicate
+                last_reflection_index = index
+                self._emit(
+                    "memory_write",
+                    "done",
+                    f"memory 写入完成: added={len(added_ids)}, skipped_duplicate={skipped_duplicate}",
+                    task_id=task.id,
+                    metadata={"added_memory_ids": list(added_ids), "skipped_duplicate": skipped_duplicate},
+                )
+
+            result.metadata.update(
+                {
+                    "generated_memory_ids": list(generated_ids),
+                    "added_memory_ids": list(added_ids),
+                    "skipped_memory_ids": list(skipped_ids),
+                    "skipped_duplicate": skipped_duplicate,
+                    "reflection_triggered": bool(trigger_reason),
+                    "trigger_reason": trigger_reason,
+                    "reflection_window_task_ids": list(reflection_window_task_ids) if trigger_reason else [],
+                }
+            )
+            train_records.append(
+                TrainingRecord(
+                    result=result,
+                    generated_memory_ids=generated_ids,
+                    added_memory_ids=added_ids,
+                    skipped_memory_ids=skipped_ids,
+                    skipped_duplicate=skipped_duplicate,
+                    reflection_triggered=bool(trigger_reason),
+                    trigger_reason=trigger_reason,
+                    reflection_window_task_ids=reflection_window_task_ids if trigger_reason else (),
+                )
+            )
+            self._append_interaction_log(
+                result=result,
+                generated_rules=generated_rules,
+                added_ids=added_ids,
+                skipped_ids=skipped_ids,
+                skipped_duplicate=skipped_duplicate,
+                reflection_triggered=bool(trigger_reason),
+                trigger_reason=trigger_reason,
+                reflection_window_task_ids=reflection_window_task_ids if trigger_reason else (),
+            )
+        self._emit("train_solve", "done", "滑动窗口训练交互完成", len(train_tasks), len(train_tasks))
+
+        results = self._run_memory_eval(eval_tasks)
+        return self._summarize(
+            run_id,
+            results,
+            learned_rules=learned_rules,
+            train_records=train_records,
+            memory_update_policy="sliding_window",
+            num_memory_generated=num_memory_generated,
+            num_memory_added=num_memory_added,
+            num_memory_skipped_duplicate=num_memory_skipped_duplicate,
+        )
 
     def _run_self_evolution_per_interaction(
         self,
@@ -181,6 +342,9 @@ class ExperimentRunner:
                     added_memory_ids=added_ids,
                     skipped_memory_ids=skipped_ids,
                     skipped_duplicate=skipped_duplicate,
+                    reflection_triggered=True,
+                    trigger_reason="per_interaction",
+                    reflection_window_task_ids=(task.id,),
                 )
             )
             self._append_interaction_log(
@@ -189,6 +353,9 @@ class ExperimentRunner:
                 added_ids=added_ids,
                 skipped_ids=skipped_ids,
                 skipped_duplicate=skipped_duplicate,
+                reflection_triggered=True,
+                trigger_reason="per_interaction",
+                reflection_window_task_ids=(task.id,),
             )
             self._emit(
                 "memory_write",
@@ -331,6 +498,9 @@ class ExperimentRunner:
         added_ids: tuple[str, ...],
         skipped_ids: tuple[str, ...],
         skipped_duplicate: int,
+        reflection_triggered: bool = False,
+        trigger_reason: str | None = None,
+        reflection_window_task_ids: tuple[str, ...] = (),
     ) -> None:
         if self.config.interaction_log_path is None:
             return
@@ -356,8 +526,12 @@ class ExperimentRunner:
             ],
             "skipped_memory_ids": list(skipped_ids),
             "skipped_duplicate": skipped_duplicate,
+            "reflection_triggered": reflection_triggered,
+            "trigger_reason": trigger_reason,
+            "reflection_window_task_ids": list(reflection_window_task_ids),
             "tags": list(task.tags),
             "metadata": task.metadata,
+            "run_metadata": result.metadata,
             "token_count": result.token_count,
             "latency_s": result.latency_s,
             "steps": result.steps,
@@ -365,6 +539,23 @@ class ExperimentRunner:
         self.config.interaction_log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.config.interaction_log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+    def _reflection_trigger_reason(
+        self,
+        result: RunResult,
+        window: list[Trajectory],
+        current_index: int,
+        last_reflection_index: int,
+    ) -> str | None:
+        stride = max(1, self.config.reflection_window_stride)
+        if current_index - last_reflection_index < stride:
+            return None
+        failures = sum(1 for trajectory in window if trajectory.correct is False)
+        if failures < self.config.min_failures_in_window:
+            return None
+        if self.config.reflection_trigger == "incorrect_or_low_score" and result.correct is False:
+            return "current_incorrect"
+        return None
 
     def _emit(
         self,
