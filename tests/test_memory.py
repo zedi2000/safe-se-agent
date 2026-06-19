@@ -74,6 +74,29 @@ def test_memory_store_skips_duplicate_entries(tmp_path) -> None:
     assert path.read_text(encoding="utf-8").count("\n") == 1
 
 
+def test_duplicate_suppression_can_be_disabled_for_oep_batches(tmp_path) -> None:
+    store = MemoryStore(JsonlMemoryBackend(tmp_path / "memory.jsonl"))
+    entries = [
+        MemoryEntry(
+            id="rule_1",
+            text="When solving math word problems, compute intermediate quantities before answering.",
+            source="oep_reflection",
+            tags=("math", "oep_attack"),
+        ),
+        MemoryEntry(
+            id="rule_2",
+            text="When solving math word problems compute intermediate quantities before answering",
+            source="oep_reflection",
+            tags=("math", "oep_attack"),
+        ),
+    ]
+
+    added = store.add(entries, deduplicate=False)
+
+    assert [entry.id for entry in added] == ["rule_1", "rule_2"]
+    assert [entry.id for entry in store.export()] == ["rule_1", "rule_2"]
+
+
 def test_memory_store_skips_semantically_similar_generic_entries(tmp_path) -> None:
     store = MemoryStore(JsonlMemoryBackend(tmp_path / "memory.jsonl"))
     first = MemoryEntry(

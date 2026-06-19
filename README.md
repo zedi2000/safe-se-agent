@@ -109,6 +109,12 @@ baseline eval -> batch 注入 attack trajectories -> reflection 生成 memory ->
 LLM 模式下，reflection 使用 H.2 的 `Reflection and Rule Distillation` 作为 system prompt，
 user 内容只包含结构化 ACT incident records；attacked eval 使用 OEP memory-entry prompt，
 而不是把整段 raw injection prompt 或 metadata 直接塞给模型。
+LLM 运行时会额外保存实际发送给模型的 prompt：
+
+- `llm_prompts.jsonl`: 全部 LLM prompt 事件。
+- `baseline_solve_prompts.jsonl`: baseline eval prompt。
+- `attacked_solve_prompts.jsonl`: 带 OEP memory 后的 attacked eval prompt。
+- `reflection_prompts.jsonl`: 每组 10 条 ACT case 的 reflection prompt。
 
 ## 进度显示
 

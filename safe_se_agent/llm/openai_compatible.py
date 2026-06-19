@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Callable, Any
 
 from safe_se_agent.core.prompts import (
     BENIGN_MEMORY_SOLVE,
@@ -26,6 +27,7 @@ class OpenAICompatibleClient:
         memory_system_prompt: str = BENIGN_MEMORY_SOLVE,
         memory_header: str = "Reference memories",
         task_header: str = "Task",
+        prompt_recorder: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         try:
             from openai import OpenAI
@@ -36,6 +38,7 @@ class OpenAICompatibleClient:
         self.memory_system_prompt = memory_system_prompt
         self.memory_header = memory_header
         self.task_header = task_header
+        self.prompt_recorder = prompt_recorder
         if not os.environ.get("OPENAI_API_KEY") and api_key is None:
             raise RuntimeError("OPENAI_API_KEY is required for --mode llm.")
         self.client = OpenAI(
@@ -52,12 +55,20 @@ class OpenAICompatibleClient:
             "Return brief reasoning followed by a final answer on the last line. "
             "The last line must contain only the final answer value, without currency symbols."
         )
-        response = self._create_chat_completion(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ]
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        self._record_prompt(
+            kind="solve",
+            messages=messages,
+            metadata={
+                "task_id": task.id,
+                "has_memory": bool(memories),
+                "memory_ids": [memory.id for memory in memories],
+            },
         )
+        response = self._create_chat_completion(messages=messages)
         text = response.choices[0].message.content or ""
         visible_text = strip_think_blocks(text) or text.strip()
         answer = visible_text.strip().split()[-1].strip(".")
@@ -86,7 +97,9 @@ class OpenAICompatibleClient:
             "Do not include bullets, labels, or markdown.\n\n"
             + "\n\n".join(records)
         )
-        response = self._create_chat_completion(messages=[{"role": "user", "content": prompt}])
+        messages = [{"role": "user", "content": prompt}]
+        self._record_prompt(kind="reflect", messages=messages, metadata={"num_trajectories": len(trajectories)})
+        response = self._create_chat_completion(messages=messages)
         text = response.choices[0].message.content or ""
         cleaned = strip_think_blocks(text)
         candidates = [line.strip("- ").strip() for line in cleaned.splitlines() if line.strip()]
@@ -94,21 +107,30 @@ class OpenAICompatibleClient:
         return candidates[-1:] if candidates else []
 
     def reflect_with_prompt(self, prompt: str) -> list[str]:
-        response = self._create_chat_completion(messages=[{"role": "user", "content": prompt}])
+        messages = [{"role": "user", "content": prompt}]
+        self._record_prompt(kind="reflect", messages=messages, metadata={"custom_prompt": True})
+        response = self._create_chat_completion(messages=messages)
         text = response.choices[0].message.content or ""
         cleaned = strip_think_blocks(text)
         candidates = [line.strip("- ").strip() for line in cleaned.splitlines() if line.strip()]
         candidates = [line for line in candidates if self._looks_like_memory(line)]
         return candidates[-1:] if candidates else []
 
-    def reflect_with_messages(self, system_prompt: str, user_prompt: str) -> list[str]:
-        response = self._create_chat_completion(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ]
-        )
+    def reflect_with_messages(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        return_raw: bool = False,
+    ) -> list[str]:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        self._record_prompt(kind="reflect", messages=messages, metadata={"custom_messages": True})
+        response = self._create_chat_completion(messages=messages)
         text = response.choices[0].message.content or ""
+        if return_raw:
+            return [text.strip()] if text.strip() else []
         cleaned = strip_think_blocks(text)
         candidates = [line.strip("- ").strip() for line in cleaned.splitlines() if line.strip()]
         candidates = [line for line in candidates if self._looks_like_memory(line)]
@@ -123,6 +145,23 @@ class OpenAICompatibleClient:
         if len(text.split()) < 6:
             return False
         return True
+
+    def _record_prompt(
+        self,
+        kind: str,
+        messages: list[dict[str, str]],
+        metadata: dict[str, Any],
+    ) -> None:
+        if self.prompt_recorder is None:
+            return
+        self.prompt_recorder(
+            {
+                "kind": kind,
+                "model": self.model,
+                "messages": messages,
+                "metadata": metadata,
+            }
+        )
 
     def _create_chat_completion(self, messages: list[dict[str, str]]):
         try:

@@ -23,3 +23,25 @@ def test_reflection_memory_filter_keeps_final_visible_lesson() -> None:
     assert client._looks_like_memory(
         "When solving multi-step math word problems, compute each intermediate quantity before using it."
     )
+
+
+def test_prompt_recorder_captures_messages() -> None:
+    events = []
+    client = object.__new__(OpenAICompatibleClient)
+    client.model = "test-model"
+    client.prompt_recorder = events.append
+
+    client._record_prompt(
+        kind="solve",
+        messages=[{"role": "system", "content": "sys"}, {"role": "user", "content": "user"}],
+        metadata={"task_id": "x"},
+    )
+
+    assert events == [
+        {
+            "kind": "solve",
+            "model": "test-model",
+            "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "user"}],
+            "metadata": {"task_id": "x"},
+        }
+    ]

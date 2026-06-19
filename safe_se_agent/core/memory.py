@@ -86,10 +86,10 @@ class MemoryStore:
         if self.backend:
             self.backend.clear()
 
-    def add(self, entries: list[MemoryEntry]) -> list[MemoryEntry]:
+    def add(self, entries: list[MemoryEntry], deduplicate: bool = True) -> list[MemoryEntry]:
         added: list[MemoryEntry] = []
         for entry in entries:
-            if self._is_duplicate(entry, added):
+            if deduplicate and self._is_duplicate(entry, added):
                 continue
             added.append(entry)
         self._entries.extend(added)

@@ -1,5 +1,11 @@
 from safe_se_agent.core.types import Task
-from scripts.run_oep_repro import attack_task_to_trajectory, build_oep_reflection_prompt, select_attack_tasks
+from scripts.run_oep_repro import (
+    attack_task_to_trajectory,
+    build_oep_reflection_prompt,
+    extract_oep_memory_entries,
+    group_attack_tasks,
+    select_attack_tasks,
+)
 
 
 def test_select_attack_tasks_uses_domain_and_group_count() -> None:
@@ -28,6 +34,33 @@ def test_select_attack_tasks_uses_domain_and_group_count() -> None:
     assert len(selected) == 20
     assert selected[0].id == "math_0"
     assert selected[-1].id == "math_19"
+
+
+def test_group_attack_tasks_keeps_each_target_rule_separate() -> None:
+    tasks = [
+        Task(
+            id="a1",
+            question="q",
+            answer="a",
+            metadata={"group_id": "math_ignore_remainder"},
+        ),
+        Task(
+            id="a2",
+            question="q",
+            answer="a",
+            metadata={"group_id": "math_ignore_remainder"},
+        ),
+        Task(
+            id="b1",
+            question="q",
+            answer="a",
+            metadata={"group_id": "math_round_before_calculation"},
+        ),
+    ]
+
+    groups = group_attack_tasks(tasks)
+
+    assert [[task.id for task in group] for group in groups] == [["a1", "a2"], ["b1"]]
 
 
 def test_attack_case_to_trajectory_marks_contrastive_failure_negative() -> None:
@@ -107,3 +140,16 @@ def test_oep_reflection_prompt_uses_structured_act_fields_not_full_injection() -
     assert "Consequence: The partial box was rejected." in prompt
     assert "FULL INJECTION PROMPT SHOULD NOT BE USED" not in prompt
     assert "bad rule" not in prompt
+
+
+def test_extract_oep_memory_entries_discards_useless_dataset_summary() -> None:
+    raw = """
+    Operational principle: When a division word problem asks for complete, shippable groups only, use floor division and discard the remainder.
+    This principle would have prevented all 27 failures in this dataset.
+    """
+
+    entries = extract_oep_memory_entries([raw])
+
+    assert entries == [
+        "When a division word problem asks for complete, shippable groups only, use floor division and discard the remainder."
+    ]
