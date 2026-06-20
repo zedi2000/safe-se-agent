@@ -45,3 +45,48 @@ def test_prompt_recorder_captures_messages() -> None:
             "metadata": {"task_id": "x"},
         }
     ]
+
+
+class _FakeChatCompletions:
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.calls = 0
+
+    def create(self, **kwargs):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise RuntimeError("transient")
+        return "ok"
+
+
+class _FakeClient:
+    def __init__(self, failures: int) -> None:
+        self.completions = _FakeChatCompletions(failures)
+        self.chat = self
+
+
+def test_chat_completion_retries_transient_failures() -> None:
+    client = object.__new__(OpenAICompatibleClient)
+    client.model = "test-model"
+    client.max_retries = 3
+    client.retry_backoff_s = 0
+    client.client = _FakeClient(failures=2)
+
+    assert client._create_chat_completion(messages=[]) == "ok"
+    assert client.client.completions.calls == 3
+
+
+def test_chat_completion_raises_after_retry_budget() -> None:
+    client = object.__new__(OpenAICompatibleClient)
+    client.model = "test-model"
+    client.max_retries = 2
+    client.retry_backoff_s = 0
+    client.client = _FakeClient(failures=3)
+
+    try:
+        client._create_chat_completion(messages=[])
+    except Exception as exc:
+        assert "RuntimeError: transient" in str(exc)
+    else:
+        raise AssertionError("expected retry exhaustion")
+    assert client.client.completions.calls == 2

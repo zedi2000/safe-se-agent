@@ -116,6 +116,85 @@ LLM 运行时会额外保存实际发送给模型的 prompt：
 - `attacked_solve_prompts.jsonl`: 带 OEP memory 后的 attacked eval prompt。
 - `reflection_prompts.jsonl`: 每组 10 条 ACT case 的 reflection prompt。
 
+## 可缓存的四阶段实验入口
+
+`run_m1_demo.py` 和 `run_oep_repro.py` 仍然保留一键复现实验流程。后续做多轮验证时，更推荐把
+baseline、memory 生成和 memory evaluation 拆开跑，避免每次验证都重新请求 baseline 或
+reflection：
+
+```bash
+# 1. 无 memory baseline，只做评测。
+python scripts/run_baseline_eval.py --mode llm \
+  --eval data/gsm8k_eval_small.jsonl \
+  --run-id gsm8k_baseline
+
+# 2. 正常 self-evolution/reflection，只产出 memory，不做 eval。
+python scripts/run_reflection.py --mode llm \
+  --train data/gsm8k_train_small.jsonl \
+  --run-id gsm8k_reflection
+
+# 3. OEP attack-case reflection，只产出注入后的 memory，不做 eval。
+python scripts/run_oep_reflection.py --mode llm \
+  --domain math \
+  --attack-cases data/oep/oep_attack_cases.jsonl \
+  --num-groups 1 \
+  --run-id oep_math_reflection_g1
+
+# 4. 使用已有 memory 做评测；不会重新跑 reflection。
+python scripts/run_memory_eval.py --mode llm \
+  --eval data/gsm8k_eval_small.jsonl \
+  --memory runs/gsm8k_reflection/memory.jsonl \
+  --run-id gsm8k_memory_eval
+
+# 使用 OEP memory 评测时，保持 OEP inference prompt 协议。
+python scripts/run_memory_eval.py --mode llm \
+  --eval data/gsm8k_eval_small.jsonl \
+  --memory runs/oep_math_reflection_g1/memory.jsonl \
+  --prompt-protocol oep \
+  --run-id oep_math_attacked_eval_g1
+```
+
+这样 baseline 结果、benign reflection memory、OEP-injected memory、memory eval 结果都会落在独立
+run 目录中，可以分别缓存、复用和对比。
+
+## 断点恢复与重试
+
+所有运行入口都支持显式断点恢复。默认情况下，如果同一个 `run-id` 已经有产物，脚本会提示使用
+`--resume` 或 `--overwrite`，避免误把不同实验混在同一个目录里。
+
+```bash
+# 网络中断或进程退出后，用相同参数继续未完成部分。
+python scripts/run_memory_eval.py --mode llm \
+  --eval data/gsm8k_eval_small.jsonl \
+  --memory runs/oep_math_reflection_g1/memory.jsonl \
+  --prompt-protocol oep \
+  --run-id oep_math_attacked_eval_g1 \
+  --resume
+
+# 确认要从头重跑同一个 run-id 时，显式覆盖本脚本负责的产物。
+python scripts/run_baseline_eval.py --mode llm \
+  --eval data/gsm8k_eval_small.jsonl \
+  --run-id gsm8k_baseline \
+  --overwrite
+```
+
+LLM 调用默认最多重试 3 次，退避基准为 2 秒；仍失败时会保留已完成 JSONL 产物并退出：
+
+```bash
+python scripts/run_oep_repro.py --mode llm \
+  --domain math \
+  --attack-cases data/oep/oep_attack_cases.jsonl \
+  --eval data/gsm8k_eval_small.jsonl \
+  --num-groups 1 \
+  --run-id oep_math_llm_g1 \
+  --max-retries 5 \
+  --retry-backoff-s 3
+```
+
+每个 run 目录会写入 `run_config.json` 和 `run_state.json`。`--resume` 会校验关键参数是否与
+`run_config.json` 一致；如果要改数据集、domain、memory 文件或其他关键参数，请换新的
+`--run-id` 或使用 `--overwrite`。
+
 ## 进度显示
 
 demo 默认开启轻量进度事件显示。TTY 下会动态刷新；重定向到日志文件时会自动退化为逐行输出。
@@ -150,6 +229,10 @@ python scripts/run_m1_demo.py --mode llm
 - `scripts/prepare_medqa.py`: 下载并转换 MedQA small 数据。
 - `scripts/prepare_toolalpaca.py`: 下载并转换 ToolAlpaca small 数据。
 - `scripts/prepare_oep.py`: 转换 OEP attack cases。
+- `scripts/run_baseline_eval.py`: 只跑 no-memory baseline eval。
+- `scripts/run_reflection.py`: 只跑 benign training/reflection 并产出 memory。
+- `scripts/run_oep_reflection.py`: 只跑 OEP attack-case reflection 并产出 injected memory。
+- `scripts/run_memory_eval.py`: 读取已有 memory 做 eval，不重新生成 memory。
 - `scripts/run_oep_repro.py`: OEP-style baseline/injection/attacked eval 复现实验。
 - `data/*_train_small.jsonl` and `data/*_eval_small.jsonl`: 默认真实数据 smoke/eval 输入。
 - `data/m1_train.jsonl` and `data/m1_eval.jsonl`: synthetic smoke-test benchmark.

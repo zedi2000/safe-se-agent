@@ -85,14 +85,33 @@ class ExperimentRunner:
         self._emit("baseline_solve", "done", "no-memory baseline 推理完成", len(eval_tasks), len(eval_tasks))
         return self._summarize(run_id, results, learned_rules=[])
 
+    def run_with_memory(self, eval_tasks: list[Task], run_id: str = "with_memory") -> EvaluationSummary:
+        """Evaluate with the adapter's currently loaded memory.
+
+        Unlike run_no_memory and run_self_evolution, this method intentionally does not reset
+        the adapter. It is meant for cached memory files produced by standalone reflection runs.
+        """
+
+        results = self._run_memory_eval(eval_tasks)
+        return self._summarize(
+            run_id,
+            results,
+            learned_rules=self.adapter.export_memory(),
+            memory_update_policy="external_memory",
+        )
+
     def run_self_evolution(
         self,
         train_tasks: list[Task],
         eval_tasks: list[Task],
         run_id: str = "self_evolution",
+        reset_state: bool = True,
+        clear_interaction_log: bool = True,
     ) -> EvaluationSummary:
-        self.adapter.reset(run_id)
-        self._clear_interaction_log()
+        if reset_state:
+            self.adapter.reset(run_id)
+        if clear_interaction_log:
+            self._clear_interaction_log()
         if self.config.memory_update_policy == "batch":
             return self._run_self_evolution_batch(train_tasks, eval_tasks, run_id)
         if self.config.memory_update_policy == "sliding_window":

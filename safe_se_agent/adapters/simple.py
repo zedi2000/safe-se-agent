@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -41,6 +42,13 @@ class SimpleAgentAdapter(AgentAdapter):
         self.memory = MemoryStore(JsonlMemoryBackend(self.memory_path))
         self.memory.clear()
         self.ids = MemoryIdFactory(prefix=f"{run_id}_mem")
+
+    def resume(self, run_id: str) -> None:
+        self.run_id = run_id
+        self.memory_path = self.memory_path_override or self.memory_root / run_id / "memory.jsonl"
+        self.memory = MemoryStore(JsonlMemoryBackend(self.memory_path))
+        self.ids = MemoryIdFactory(prefix=f"{run_id}_mem")
+        self._prime_id_factory()
 
     def solve(self, task: Task, memories: list[MemoryEntry] | None = None) -> RunResult:
         start = time.perf_counter()
@@ -140,3 +148,14 @@ class SimpleAgentAdapter(AgentAdapter):
 
     def get_memory_path(self) -> Path:
         return self.memory_path
+
+    def _prime_id_factory(self) -> None:
+        prefix = re.escape(self.ids.prefix)
+        pattern = re.compile(rf"^{prefix}_(?P<tag>.+)_(?P<count>\d+)$")
+        for memory in self.memory.export():
+            match = pattern.match(memory.id)
+            if not match:
+                continue
+            tag = match.group("tag")
+            count = int(match.group("count"))
+            self.ids.counts[tag] = max(self.ids.counts[tag], count)

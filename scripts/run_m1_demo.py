@@ -20,6 +20,16 @@ from safe_se_agent.core.experiment import (
 )
 from safe_se_agent.core.io import load_jsonl_tasks
 from safe_se_agent.core.memory import memory_to_dict
+from safe_se_agent.core.resume import (
+    ResumeConfigError,
+    append_jsonl,
+    completed_values,
+    filter_first_by_key,
+    prepare_resumable_run,
+    read_jsonl,
+    summarize_result_rows,
+    write_run_state,
+)
 from safe_se_agent.core.types import RunResult, TrainingRecord
 from safe_se_agent.llm.offline import OfflineLLMClient
 from safe_se_agent.llm.openai_compatible import LLMConnectionError, OpenAICompatibleClient
@@ -93,7 +103,13 @@ class ConsoleProgress:
         return labels.get(stage, stage)
 
 
-def build_adapter(mode: str, retrieve_k: int, memory_path: Path) -> SimpleAgentAdapter:
+def build_adapter(
+    mode: str,
+    retrieve_k: int,
+    memory_path: Path,
+    max_retries: int = 3,
+    retry_backoff_s: float = 2.0,
+) -> SimpleAgentAdapter:
     if mode == "offline":
         return SimpleAgentAdapter(
             llm=OfflineLLMClient(),
@@ -102,7 +118,7 @@ def build_adapter(mode: str, retrieve_k: int, memory_path: Path) -> SimpleAgentA
         )
     if mode == "llm":
         return SimpleAgentAdapter(
-            llm=OpenAICompatibleClient(),
+            llm=OpenAICompatibleClient(max_retries=max_retries, retry_backoff_s=retry_backoff_s),
             retrieve_k=retrieve_k,
             memory_path=memory_path,
         )
@@ -244,6 +260,10 @@ def main() -> None:
     parser.add_argument("--reflection-window-stride", type=int, default=1)
     parser.add_argument("--min-failures-in-window", type=int, default=1)
     parser.add_argument("--run-id", default="m1_demo")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--max-retries", type=int, default=3)
+    parser.add_argument("--retry-backoff-s", type=float, default=2.0)
     parser.add_argument("--no-progress", action="store_true", help="关闭进度显示，只输出最终结果。")
     parser.add_argument(
         "--progress",
@@ -258,9 +278,49 @@ def main() -> None:
     run_dir = ROOT / "runs" / args.run_id
     memory_path = run_dir / "memory.jsonl"
     interaction_log_path = run_dir / "interaction_log.jsonl"
+    baseline_results_path = run_dir / "baseline_results.jsonl"
+    train_results_path = run_dir / "train_results.jsonl"
+    self_evo_results_path = run_dir / "self_evolution_results.jsonl"
+    summary_path = run_dir / "summary.json"
     progress = None if args.no_progress else ConsoleProgress(mode=args.progress)
+    config = {
+        "script": "run_m1_demo.py",
+        "mode": args.mode,
+        "train": str(Path(args.train)),
+        "eval": str(Path(args.eval)),
+        "retrieve_k": args.retrieve_k,
+        "memory_update_policy": args.memory_update_policy,
+        "reflection_window_size": args.reflection_window_size,
+        "reflection_window_stride": args.reflection_window_stride,
+        "min_failures_in_window": args.min_failures_in_window,
+        "run_id": args.run_id,
+    }
     try:
-        adapter = build_adapter(args.mode, retrieve_k=args.retrieve_k, memory_path=memory_path)
+        prepare_resumable_run(
+            run_dir,
+            config,
+            [
+                memory_path,
+                interaction_log_path,
+                baseline_results_path,
+                train_results_path,
+                self_evo_results_path,
+                summary_path,
+            ],
+            resume=args.resume,
+            overwrite=args.overwrite,
+        )
+    except ResumeConfigError as exc:
+        print(f"无法启动：{exc}")
+        raise SystemExit(2) from exc
+    try:
+        adapter = build_adapter(
+            args.mode,
+            retrieve_k=args.retrieve_k,
+            memory_path=memory_path,
+            max_retries=args.max_retries,
+            retry_backoff_s=args.retry_backoff_s,
+        )
     except RuntimeError as exc:
         print(f"初始化失败：{exc}")
         raise SystemExit(2) from exc
@@ -294,12 +354,79 @@ def main() -> None:
 
     start = time.perf_counter()
     try:
-        baseline = runner.run_no_memory(eval_tasks)
-        self_evo = runner.run_self_evolution(train_tasks, eval_tasks)
-        write_artifacts(run_dir, baseline, self_evo, progress=progress)
+        baseline_completed = completed_values(baseline_results_path, "task_id") if args.resume else set()
+        if progress:
+            progress(ProgressEvent("baseline_solve", "start", "开始 no-memory baseline 推理", 0, len(eval_tasks)))
+        for index, task in enumerate(eval_tasks, start=1):
+            if task.id in baseline_completed:
+                continue
+            if progress:
+                progress(ProgressEvent("baseline_solve", "wait", f"等待模型响应: {task.id}", index - 1, len(eval_tasks), task.id))
+            result = adapter.solve(task, memories=[])
+            append_jsonl(baseline_results_path, result_to_dict(result))
+            if progress:
+                progress(ProgressEvent("baseline_solve", "progress", f"baseline 完成: {task.id}", index, len(eval_tasks), task.id))
+        if progress:
+            progress(ProgressEvent("baseline_solve", "done", "no-memory baseline 推理完成", len(eval_tasks), len(eval_tasks)))
+
+        if args.resume:
+            adapter.resume(args.run_id)
+            train_completed = completed_values(interaction_log_path, "task_id")
+            pending_train_tasks = [task for task in train_tasks if task.id not in train_completed]
+        else:
+            pending_train_tasks = train_tasks
+        train_summary = runner.run_self_evolution(
+            pending_train_tasks,
+            eval_tasks=[],
+            run_id=args.run_id,
+            reset_state=not args.resume,
+            clear_interaction_log=not args.resume,
+        )
+        for record in train_summary.train_records or []:
+            append_jsonl(train_results_path, train_record_to_dict(record))
+
+        eval_completed = completed_values(self_evo_results_path, "task_id") if args.resume else set()
+        if progress:
+            progress(ProgressEvent("self_evo_solve", "start", "开始 self-evolution 评测推理", 0, len(eval_tasks)))
+        for index, task in enumerate(eval_tasks, start=1):
+            if task.id in eval_completed:
+                continue
+            if progress:
+                progress(ProgressEvent("retrieve", "wait", f"正在检索 memory: {task.id}", index - 1, len(eval_tasks), task.id))
+            memories = adapter.retrieve(task, k=args.retrieve_k)
+            if progress:
+                progress(
+                    ProgressEvent(
+                        "retrieve",
+                        "done",
+                        f"检索完成: {task.id}",
+                        index,
+                        len(eval_tasks),
+                        task.id,
+                        {"retrieved_memory_ids": [memory.id for memory in memories]},
+                    )
+                )
+                progress(ProgressEvent("self_evo_solve", "wait", f"等待模型响应: {task.id}", index - 1, len(eval_tasks), task.id))
+            result = adapter.solve(task, memories=memories)
+            append_jsonl(self_evo_results_path, result_to_dict(result))
+            if progress:
+                progress(ProgressEvent("self_evo_solve", "progress", f"self-evolution 完成: {task.id}", index, len(eval_tasks), task.id))
+        if progress:
+            progress(ProgressEvent("self_evo_solve", "done", "self-evolution 评测推理完成", len(eval_tasks), len(eval_tasks)))
     except LLMConnectionError as exc:
         if progress:
             progress.close()
+        write_run_state(
+            run_dir,
+            status="failed",
+            stage="m1_demo",
+            completed=False,
+            counts={
+                "baseline_completed": len(filter_first_by_key(read_jsonl(baseline_results_path), "task_id")),
+                "train_completed": len(read_jsonl(interaction_log_path)),
+                "eval_completed": len(filter_first_by_key(read_jsonl(self_evo_results_path), "task_id")),
+            },
+        )
         print("\nLLM 调用失败：")
         print(exc)
         raise SystemExit(2) from exc
@@ -307,19 +434,64 @@ def main() -> None:
         progress.close()
     elapsed = time.perf_counter() - start
 
+    baseline_rows = filter_first_by_key(read_jsonl(baseline_results_path), "task_id")
+    self_evo_rows = filter_first_by_key(read_jsonl(self_evo_results_path), "task_id")
+    baseline_metrics = summarize_result_rows(baseline_rows)
+    self_evo_metrics = summarize_result_rows(self_evo_rows)
+    train_rows = read_jsonl(interaction_log_path)
+    if train_rows:
+        generated = sum(len(row.get("generated_memory", [])) for row in train_rows)
+        added = sum(len(row.get("added_memory", [])) for row in train_rows)
+        skipped = sum(int(row.get("skipped_duplicate", 0) or 0) for row in train_rows)
+    else:
+        generated = train_summary.num_memory_generated
+        added = train_summary.num_memory_added
+        skipped = train_summary.num_memory_skipped_duplicate
+    summary = {
+        "baseline": {
+            "accuracy": baseline_metrics["accuracy"],
+            "correct": baseline_metrics["correct"],
+            "total": baseline_metrics["total"],
+            "retrieval_hit_rate": baseline_metrics["retrieval_hit_rate"],
+            "memory_count": 0,
+        },
+        "self_evolution": {
+            "accuracy": self_evo_metrics["accuracy"],
+            "correct": self_evo_metrics["correct"],
+            "total": self_evo_metrics["total"],
+            "retrieval_hit_rate": self_evo_metrics["retrieval_hit_rate"],
+            "memory_count": len(adapter.export_memory()),
+            "memory_update_policy": args.memory_update_policy,
+            "num_memory_generated": generated,
+            "num_memory_added": added,
+            "num_memory_skipped_duplicate": skipped,
+        },
+        "accuracy_delta": self_evo_metrics["accuracy"] - baseline_metrics["accuracy"],
+        "learned_rules": [memory_to_dict(rule) for rule in adapter.export_memory()],
+    }
+    summary_path.write_text(json.dumps(summary, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    write_run_state(
+        run_dir,
+        status="complete",
+        stage="m1_demo",
+        completed=True,
+        counts={
+            "baseline_completed": baseline_metrics["total"],
+            "train_completed": len(train_rows),
+            "eval_completed": self_evo_metrics["total"],
+        },
+    )
     print("\n指标对比:")
     print("  run              accuracy        retrieval_hit     memory_count")
     print(
-        f"  baseline         {baseline.accuracy:.2%}          "
-        f"{baseline.retrieval_hit_rate:.2%}           {baseline.memory_count}"
+        f"  baseline         {baseline_metrics['accuracy']:.2%}          "
+        f"{baseline_metrics['retrieval_hit_rate']:.2%}           0"
     )
     print(
-        f"  self_evolution   {self_evo.accuracy:.2%}        "
-        f"{self_evo.retrieval_hit_rate:.2%}         {self_evo.memory_count}"
+        f"  self_evolution   {self_evo_metrics['accuracy']:.2%}        "
+        f"{self_evo_metrics['retrieval_hit_rate']:.2%}         {len(adapter.export_memory())}"
     )
-    print_summary(baseline)
-    print_summary(self_evo)
-    delta = self_evo.accuracy - baseline.accuracy
+    delta = summary["accuracy_delta"]
     print(f"\n准确率提升: {delta:.2%}")
     print(f"总耗时: {elapsed:.2f}s")
     print("实验产物:")

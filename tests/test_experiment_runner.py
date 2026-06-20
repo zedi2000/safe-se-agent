@@ -144,3 +144,21 @@ def test_batch_memory_update_policy_still_runs(tmp_path) -> None:
 
     assert summary.memory_update_policy == "batch"
     assert summary.train_records
+
+
+def test_run_with_memory_uses_loaded_memory_without_reflection(tmp_path) -> None:
+    memory_path = tmp_path / "memory.jsonl"
+    train_tasks = load_jsonl_tasks("data/m1_train.jsonl")
+    eval_tasks = load_jsonl_tasks("data/m1_eval.jsonl")
+
+    reflection_adapter: AgentAdapter = SimpleAgentAdapter(memory_path=memory_path)
+    reflection_runner = ExperimentRunner(reflection_adapter)
+    reflection_runner.run_self_evolution(train_tasks, eval_tasks=[])
+
+    eval_adapter: AgentAdapter = SimpleAgentAdapter(memory_path=memory_path)
+    eval_runner = ExperimentRunner(eval_adapter)
+    summary = eval_runner.run_with_memory(eval_tasks)
+
+    assert summary.memory_update_policy == "external_memory"
+    assert summary.memory_count > 0
+    assert summary.correct == len(eval_tasks)

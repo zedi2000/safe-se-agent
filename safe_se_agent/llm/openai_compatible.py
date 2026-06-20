@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Callable, Any
 
 from safe_se_agent.core.prompts import (
@@ -28,6 +29,8 @@ class OpenAICompatibleClient:
         memory_header: str = "Reference memories",
         task_header: str = "Task",
         prompt_recorder: Callable[[dict[str, Any]], None] | None = None,
+        max_retries: int = 3,
+        retry_backoff_s: float = 2.0,
     ) -> None:
         try:
             from openai import OpenAI
@@ -39,6 +42,8 @@ class OpenAICompatibleClient:
         self.memory_header = memory_header
         self.task_header = task_header
         self.prompt_recorder = prompt_recorder
+        self.max_retries = max(1, max_retries)
+        self.retry_backoff_s = max(0.0, retry_backoff_s)
         if not os.environ.get("OPENAI_API_KEY") and api_key is None:
             raise RuntimeError("OPENAI_API_KEY is required for --mode llm.")
         self.client = OpenAI(
@@ -164,14 +169,24 @@ class OpenAICompatibleClient:
         )
 
     def _create_chat_completion(self, messages: list[dict[str, str]]):
-        try:
-            return self.client.chat.completions.create(
-                model=self.model,
-                temperature=0,
-                messages=messages,
-            )
-        except Exception as exc:
-            raise LLMConnectionError(self._format_connection_error(exc)) from exc
+        max_retries = max(1, int(getattr(self, "max_retries", 1)))
+        retry_backoff_s = max(0.0, float(getattr(self, "retry_backoff_s", 0.0)))
+        last_exc: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                return self.client.chat.completions.create(
+                    model=self.model,
+                    temperature=0,
+                    messages=messages,
+                )
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= max_retries:
+                    break
+                if retry_backoff_s:
+                    time.sleep(retry_backoff_s * (2 ** (attempt - 1)))
+        assert last_exc is not None
+        raise LLMConnectionError(self._format_connection_error(last_exc)) from last_exc
 
     def _format_connection_error(self, exc: Exception) -> str:
         proxy_vars = [

@@ -13,10 +13,20 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from safe_se_agent.adapters.simple import SimpleAgentAdapter
-from safe_se_agent.core.experiment import ExperimentConfig, ExperimentRunner
+from safe_se_agent.core.experiment import ExperimentConfig, ExperimentRunner, ProgressEvent
 from safe_se_agent.core.io import load_jsonl_tasks
 from safe_se_agent.core.memory import memory_to_dict
 from safe_se_agent.core.prompts import OEP_INFERENCE, REFLECTION_AND_RULE_DISTILLATION
+from safe_se_agent.core.resume import (
+    ResumeConfigError,
+    append_jsonl,
+    completed_values,
+    filter_first_by_key,
+    prepare_resumable_run,
+    read_jsonl,
+    summarize_result_rows,
+    write_run_state,
+)
 from safe_se_agent.core.types import MemoryEntry, Task, Trajectory
 from safe_se_agent.llm.offline import OfflineLLMClient
 from safe_se_agent.llm.openai_compatible import LLMConnectionError, OpenAICompatibleClient
@@ -28,6 +38,8 @@ def build_adapter(
     retrieve_k: int,
     memory_path: Path,
     prompt_recorder=None,
+    max_retries: int = 3,
+    retry_backoff_s: float = 2.0,
 ) -> SimpleAgentAdapter:
     if mode == "offline":
         return SimpleAgentAdapter(
@@ -42,6 +54,8 @@ def build_adapter(
                 memory_header="Memory entry",
                 task_header="Current problem",
                 prompt_recorder=prompt_recorder,
+                max_retries=max_retries,
+                retry_backoff_s=retry_backoff_s,
             ),
             retrieve_k=retrieve_k,
             memory_path=memory_path,
@@ -293,12 +307,27 @@ def main() -> None:
     parser.add_argument("--group-size", type=int, default=10, help="Number of cases to use from each group.")
     parser.add_argument("--retrieve-k", type=int, default=3)
     parser.add_argument("--run-id", default="oep_math_repro")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--max-retries", type=int, default=3)
+    parser.add_argument("--retry-backoff-s", type=float, default=2.0)
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--progress", choices=["auto", "plain"], default="auto")
     args = parser.parse_args()
 
     run_dir = ROOT / "runs" / args.run_id
     memory_path = run_dir / "memory.jsonl"
+    baseline_results_path = run_dir / "baseline_results.jsonl"
+    attack_cases_path = run_dir / "attack_cases.jsonl"
+    attack_trajectories_path = run_dir / "attack_trajectories.jsonl"
+    reflection_prompts_path = run_dir / "reflection_prompts.jsonl"
+    reflection_raw_outputs_path = run_dir / "reflection_raw_outputs.jsonl"
+    prompts_path = run_dir / "llm_prompts.jsonl"
+    baseline_prompts_path = run_dir / "baseline_solve_prompts.jsonl"
+    attacked_prompts_path = run_dir / "attacked_solve_prompts.jsonl"
+    attack_memory_path = run_dir / "attack_memory.jsonl"
+    attacked_results_path = run_dir / "attacked_results.jsonl"
+    summary_path = run_dir / "summary.json"
     progress = None if args.no_progress else ConsoleProgress(mode=args.progress)
     attack_tasks_all = load_jsonl_tasks(args.attack_cases)
     attack_tasks = select_attack_tasks(attack_tasks_all, args.domain, args.num_groups, args.group_size)
@@ -316,11 +345,51 @@ def main() -> None:
     print(f"- run_dir: {run_dir}")
     print(f"- memory_path: {memory_path}")
 
-    prompt_events: list[dict[str, object]] = []
+    config = {
+        "script": "run_oep_repro.py",
+        "mode": args.mode,
+        "domain": args.domain,
+        "attack_cases": str(Path(args.attack_cases)),
+        "eval": str(Path(args.eval)),
+        "num_groups": args.num_groups,
+        "group_size": args.group_size,
+        "retrieve_k": args.retrieve_k,
+        "run_id": args.run_id,
+    }
+    try:
+        prepare_resumable_run(
+            run_dir,
+            config,
+            [
+                memory_path,
+                baseline_results_path,
+                attack_cases_path,
+                attack_trajectories_path,
+                reflection_prompts_path,
+                reflection_raw_outputs_path,
+                prompts_path,
+                baseline_prompts_path,
+                attacked_prompts_path,
+                attack_memory_path,
+                attacked_results_path,
+                summary_path,
+            ],
+            resume=args.resume,
+            overwrite=args.overwrite,
+        )
+    except ResumeConfigError as exc:
+        print(f"无法启动：{exc}")
+        raise SystemExit(2) from exc
+
     prompt_phase = {"name": "init"}
 
     def record_prompt(event: dict[str, object]) -> None:
-        prompt_events.append({"phase": prompt_phase["name"], **event})
+        row = {"phase": prompt_phase["name"], **event}
+        append_jsonl(prompts_path, row)
+        if row.get("phase") == "baseline_eval" and row.get("kind") == "solve":
+            append_jsonl(baseline_prompts_path, row)
+        if row.get("phase") == "attacked_eval" and row.get("kind") == "solve":
+            append_jsonl(attacked_prompts_path, row)
 
     try:
         adapter = build_adapter(
@@ -328,6 +397,8 @@ def main() -> None:
             args.retrieve_k,
             memory_path,
             prompt_recorder=record_prompt if args.mode == "llm" else None,
+            max_retries=args.max_retries,
+            retry_backoff_s=args.retry_backoff_s,
         )
     except RuntimeError as exc:
         print(f"初始化失败：{exc}")
@@ -341,31 +412,76 @@ def main() -> None:
     start = time.perf_counter()
     try:
         prompt_phase["name"] = "baseline_eval"
-        baseline = runner.run_no_memory(eval_tasks, run_id=f"{args.run_id}_baseline")
+        baseline_completed = completed_values(baseline_results_path, "task_id") if args.resume else set()
+        if progress:
+            progress(ProgressEvent("baseline_solve", "start", "开始 no-memory baseline 推理", 0, len(eval_tasks)))
+        for index, task in enumerate(eval_tasks, start=1):
+            if task.id in baseline_completed:
+                continue
+            if progress:
+                progress(ProgressEvent("baseline_solve", "wait", f"等待模型响应: {task.id}", index - 1, len(eval_tasks), task.id))
+            result = adapter.solve(task, memories=[])
+            append_jsonl(baseline_results_path, result_to_dict(result))
+            if progress:
+                progress(ProgressEvent("baseline_solve", "progress", f"baseline 完成: {task.id}", index, len(eval_tasks), task.id))
+        if progress:
+            progress(ProgressEvent("baseline_solve", "done", "no-memory baseline 推理完成", len(eval_tasks), len(eval_tasks)))
 
-        adapter.reset(args.run_id)
         trajectories = [attack_task_to_trajectory(task) for task in attack_tasks]
-        all_memories: list[MemoryEntry] = []
-        reflection_prompts: list[dict[str, object]] = []
-        reflection_raw_outputs: list[dict[str, object]] = []
+        if args.resume:
+            adapter.resume(args.run_id)
+        else:
+            adapter.reset(args.run_id)
+        if not args.resume or not attack_cases_path.exists():
+            for task in attack_tasks:
+                append_jsonl(
+                    attack_cases_path,
+                    {
+                        "task_id": task.id,
+                        "question": task.question,
+                        "answer": task.answer,
+                        "tags": list(task.tags),
+                        "metadata": task.metadata,
+                    },
+                )
+            for trajectory in trajectories:
+                append_jsonl(
+                    attack_trajectories_path,
+                    {
+                        "task_id": trajectory.task.id,
+                        "question": trajectory.task.question,
+                        "agent_answer": trajectory.answer,
+                        "expected_answer": trajectory.expected_answer,
+                        "correct": trajectory.correct,
+                        "reasoning": trajectory.reasoning,
+                        "metadata": trajectory.metadata,
+                        "task_metadata": trajectory.task.metadata,
+                    },
+                )
+        completed_groups = completed_values(reflection_prompts_path, "group_id") if args.resume else set()
         for group in group_attack_tasks(attack_tasks):
             group_id = str(group[0].metadata.get("group_id"))
+            if group_id in completed_groups:
+                continue
             prompt_phase["name"] = "attack_reflection"
             memories, reflection_prompt, raw_outputs = reflect_oep_memories(adapter, group)
-            reflection_prompts.append(
+            append_jsonl(
+                reflection_prompts_path,
                 {
                     "group_id": group_id,
                     "task_ids": [task.id for task in group],
                     "prompt": reflection_prompt,
-                }
+                },
             )
-            reflection_raw_outputs.append(
+            append_jsonl(
+                reflection_raw_outputs_path,
                 {
                     "group_id": group_id,
                     "task_ids": [task.id for task in group],
                     "raw_outputs": raw_outputs,
-                }
+                },
             )
+            group_memories: list[MemoryEntry] = []
             for memory in memories[:1]:
                 memory.source = "oep_reflection"
                 memory.stats.update(
@@ -377,22 +493,64 @@ def main() -> None:
                         "window_task_ids": [task.id for task in group],
                     }
                 )
-                all_memories.append(memory)
-        adapter.memory.add(all_memories, deduplicate=False)
+                group_memories.append(memory)
+            adapter.memory.add(group_memories, deduplicate=False)
+            for memory in group_memories:
+                append_jsonl(attack_memory_path, memory_to_dict(memory))
         prompt_phase["name"] = "attacked_eval"
-        attacked_results = runner._run_memory_eval(eval_tasks)
+        attacked_completed = completed_values(attacked_results_path, "task_id") if args.resume else set()
+        if progress:
+            progress(ProgressEvent("self_evo_solve", "start", "开始 attacked eval 推理", 0, len(eval_tasks)))
+        for index, task in enumerate(eval_tasks, start=1):
+            if task.id in attacked_completed:
+                continue
+            if progress:
+                progress(ProgressEvent("retrieve", "wait", f"正在检索 memory: {task.id}", index - 1, len(eval_tasks), task.id))
+            memories = adapter.retrieve(task, k=args.retrieve_k)
+            if progress:
+                progress(
+                    ProgressEvent(
+                        "retrieve",
+                        "done",
+                        f"检索完成: {task.id}",
+                        index,
+                        len(eval_tasks),
+                        task.id,
+                        {"retrieved_memory_ids": [memory.id for memory in memories]},
+                    )
+                )
+                progress(ProgressEvent("self_evo_solve", "wait", f"等待模型响应: {task.id}", index - 1, len(eval_tasks), task.id))
+            result = adapter.solve(task, memories=memories)
+            append_jsonl(attacked_results_path, result_to_dict(result))
+            if progress:
+                progress(ProgressEvent("self_evo_solve", "progress", f"attacked eval 完成: {task.id}", index, len(eval_tasks), task.id))
+        if progress:
+            progress(ProgressEvent("self_evo_solve", "done", "attacked eval 推理完成", len(eval_tasks), len(eval_tasks)))
     except LLMConnectionError as exc:
         if progress:
             progress.close()
+        write_run_state(
+            run_dir,
+            status="failed",
+            stage=prompt_phase["name"],
+            completed=False,
+            counts={
+                "baseline_completed": len(filter_first_by_key(read_jsonl(baseline_results_path), "task_id")),
+                "reflection_groups_completed": len(completed_values(reflection_prompts_path, "group_id")),
+                "attacked_completed": len(filter_first_by_key(read_jsonl(attacked_results_path), "task_id")),
+            },
+        )
         print("\nLLM 调用失败：")
         print(exc)
         raise SystemExit(2) from exc
     if progress:
         progress.close()
 
-    attacked_correct = sum(1 for result in attacked_results if result.correct)
-    attacked_accuracy = attacked_correct / len(attacked_results) if attacked_results else 0.0
-    accuracy_delta = attacked_accuracy - baseline.accuracy
+    baseline_rows = filter_first_by_key(read_jsonl(baseline_results_path), "task_id")
+    attacked_rows = filter_first_by_key(read_jsonl(attacked_results_path), "task_id")
+    baseline_metrics = summarize_result_rows(baseline_rows)
+    attacked_metrics = summarize_result_rows(attacked_rows)
+    accuracy_delta = attacked_metrics["accuracy"] - baseline_metrics["accuracy"]
     summary = {
         "mode": args.mode,
         "domain": args.domain,
@@ -413,37 +571,37 @@ def main() -> None:
             "inference": "system=OEP memory-entry prompt; user=Memory entry + Current problem",
         },
         "baseline": {
-            "accuracy": baseline.accuracy,
-            "correct": baseline.correct,
-            "total": baseline.total,
+            "accuracy": baseline_metrics["accuracy"],
+            "correct": baseline_metrics["correct"],
+            "total": baseline_metrics["total"],
         },
         "attacked": {
-            "accuracy": attacked_accuracy,
-            "correct": attacked_correct,
-            "total": len(attacked_results),
+            "accuracy": attacked_metrics["accuracy"],
+            "correct": attacked_metrics["correct"],
+            "total": attacked_metrics["total"],
             "memory_count": len(adapter.export_memory()),
         },
         "accuracy_delta": accuracy_delta,
         "learned_rules": [memory_to_dict(memory) for memory in adapter.export_memory()],
     }
-    write_attack_artifacts(
-        run_dir=run_dir,
-        baseline_results=[result_to_dict(result) for result in baseline.results],
-        attack_tasks=attack_tasks,
-        attack_trajectories=trajectories,
-        reflection_prompts=reflection_prompts,
-        reflection_raw_outputs=reflection_raw_outputs,
-        memories=adapter.export_memory(),
-        attacked_results=[result_to_dict(result) for result in attacked_results],
-        prompt_events=prompt_events,
-        summary=summary,
+    summary_path.write_text(json.dumps(summary, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    write_run_state(
+        run_dir,
+        status="complete",
+        stage="oep_repro",
+        completed=True,
+        counts={
+            "baseline_completed": baseline_metrics["total"],
+            "reflection_groups_completed": len(completed_values(reflection_prompts_path, "group_id")),
+            "attacked_completed": attacked_metrics["total"],
+        },
     )
     elapsed = time.perf_counter() - start
 
     print("\n指标对比:")
     print("  run         accuracy       correct/total")
-    print(f"  baseline    {baseline.accuracy:.2%}       {baseline.correct}/{baseline.total}")
-    print(f"  attacked    {attacked_accuracy:.2%}       {attacked_correct}/{len(attacked_results)}")
+    print(f"  baseline    {baseline_metrics['accuracy']:.2%}       {baseline_metrics['correct']}/{baseline_metrics['total']}")
+    print(f"  attacked    {attacked_metrics['accuracy']:.2%}       {attacked_metrics['correct']}/{attacked_metrics['total']}")
     print(f"准确率变化: {accuracy_delta:.2%}")
     print(f"Memory 数量: {len(adapter.export_memory())}")
     for memory in adapter.export_memory():
