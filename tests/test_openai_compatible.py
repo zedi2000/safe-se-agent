@@ -1,3 +1,4 @@
+from safe_se_agent.core.types import MemoryEntry, Task
 from safe_se_agent.llm.openai_compatible import OpenAICompatibleClient
 
 
@@ -65,6 +66,34 @@ class _FakeClient:
         self.chat = self
 
 
+class _FakeMessage:
+    content = "Reasoning\n42"
+
+
+class _FakeChoice:
+    message = _FakeMessage()
+
+
+class _FakeResponse:
+    choices = [_FakeChoice()]
+    usage = None
+
+
+class _CapturingChatCompletions:
+    def __init__(self) -> None:
+        self.messages = None
+
+    def create(self, **kwargs):
+        self.messages = kwargs["messages"]
+        return _FakeResponse()
+
+
+class _CapturingClient:
+    def __init__(self) -> None:
+        self.completions = _CapturingChatCompletions()
+        self.chat = self
+
+
 def test_chat_completion_retries_transient_failures() -> None:
     client = object.__new__(OpenAICompatibleClient)
     client.model = "test-model"
@@ -90,3 +119,29 @@ def test_chat_completion_raises_after_retry_budget() -> None:
     else:
         raise AssertionError("expected retry exhaustion")
     assert client.client.completions.calls == 2
+
+
+def test_solve_places_memory_in_system_prompt_not_user_prompt() -> None:
+    client = object.__new__(OpenAICompatibleClient)
+    client.model = "test-model"
+    client.memory_system_prompt = "Use memories."
+    client.memory_header = "Memory entry"
+    client.task_header = "Current problem"
+    client.prompt_recorder = None
+    client.max_retries = 1
+    client.retry_backoff_s = 0
+    client.client = _CapturingClient()
+
+    task = Task(id="t1", question="What is 40 + 2?", answer="42")
+    memory = MemoryEntry(id="m1", text="Always add carefully.", source="test")
+
+    client.solve(task, [memory])
+
+    messages = client.client.completions.messages
+    assert messages[0]["role"] == "system"
+    assert "Memory entry:" in messages[0]["content"]
+    assert "Always add carefully." in messages[0]["content"]
+    assert messages[1]["role"] == "user"
+    assert "Current problem: What is 40 + 2?" in messages[1]["content"]
+    assert "Memory entry:" not in messages[1]["content"]
+    assert "Always add carefully." not in messages[1]["content"]

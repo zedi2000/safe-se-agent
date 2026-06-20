@@ -568,7 +568,7 @@ def main() -> None:
         },
         "prompt_protocol": {
             "reflection": "system=Reflection and Rule Distillation; user=structured ACT incident records",
-            "inference": "system=OEP memory-entry prompt; user=Memory entry + Current problem",
+            "inference": "system=OEP memory-entry prompt + Memory entry; user=Current problem",
         },
         "baseline": {
             "accuracy": baseline_metrics["accuracy"],

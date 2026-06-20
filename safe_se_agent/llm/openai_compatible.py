@@ -52,10 +52,15 @@ class OpenAICompatibleClient:
         )
 
     def solve(self, task: Task, memories: list[MemoryEntry]) -> tuple[str, str, int | None, str]:
-        memory_block = "\n".join(f"- {memory.text}" for memory in memories) or "(none)"
-        system_prompt = self.memory_system_prompt if memories else BENIGN_NO_MEMORY_SOLVE
+        memory_block = "\n".join(f"- {memory.text}" for memory in memories)
+        if memories:
+            system_prompt = (
+                f"{self.memory_system_prompt}\n\n"
+                f"{self.memory_header}:\n{memory_block}"
+            )
+        else:
+            system_prompt = BENIGN_NO_MEMORY_SOLVE
         prompt = (
-            f"{self.memory_header}:\n{memory_block}\n\n"
             f"{self.task_header}: {task.question}\n"
             "Return brief reasoning followed by a final answer on the last line. "
             "The last line must contain only the final answer value, without currency symbols."

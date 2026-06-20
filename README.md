@@ -107,7 +107,7 @@ python scripts/run_oep_repro.py --mode llm \
 baseline eval -> batch 注入 attack trajectories -> reflection 生成 memory -> attacked eval。
 这对应 OEP 中 “一组 injected cases 经 memory consolidation 形成 memory entry” 的实验语义。
 LLM 模式下，reflection 使用 H.2 的 `Reflection and Rule Distillation` 作为 system prompt，
-user 内容只包含结构化 ACT incident records；attacked eval 使用 OEP memory-entry prompt，
+user 内容只包含结构化 ACT incident records；attacked eval 将 OEP memory entry 放入 system prompt，
 而不是把整段 raw injection prompt 或 metadata 直接塞给模型。
 LLM 运行时会额外保存实际发送给模型的 prompt：
 
