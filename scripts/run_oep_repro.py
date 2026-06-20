@@ -65,11 +65,21 @@ def build_adapter(
 
 def select_attack_tasks(tasks: list[Task], domain: str, num_groups: int, group_size: int) -> list[Task]:
     domain_tasks = [task for task in tasks if task.metadata.get("domain") == domain]
-    selected_groups = set(range(num_groups))
+    selected_group_ids: list[str] = []
+    selected_group_set: set[str] = set()
+    for task in domain_tasks:
+        group_id = str(task.metadata.get("group_id") or task.metadata.get("group_index", "unknown"))
+        if group_id in selected_group_set:
+            continue
+        selected_group_ids.append(group_id)
+        selected_group_set.add(group_id)
+        if len(selected_group_ids) >= num_groups:
+            break
+    selected_groups = set(selected_group_ids)
     selected = [
         task
         for task in domain_tasks
-        if int(task.metadata.get("group_index", -1)) in selected_groups
+        if str(task.metadata.get("group_id") or task.metadata.get("group_index", "unknown")) in selected_groups
         and int(task.metadata.get("case_index_in_group", -1)) < group_size
     ]
     return selected

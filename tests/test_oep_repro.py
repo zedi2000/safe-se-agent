@@ -36,6 +36,59 @@ def test_select_attack_tasks_uses_domain_and_group_count() -> None:
     assert selected[-1].id == "math_19"
 
 
+def test_select_attack_tasks_counts_unique_group_ids_when_indices_overlap() -> None:
+    tasks = [
+        Task(
+            id=f"a_{index}",
+            question="q",
+            answer="a",
+            tags=("math", "oep_attack"),
+            metadata={
+                "domain": "math",
+                "group_index": 0,
+                "group_id": "math_a",
+                "case_index_in_group": index,
+            },
+        )
+        for index in range(10)
+    ]
+    tasks.extend(
+        Task(
+            id=f"b_{index}",
+            question="q",
+            answer="a",
+            tags=("math", "oep_attack"),
+            metadata={
+                "domain": "math",
+                "group_index": 0,
+                "group_id": "math_b",
+                "case_index_in_group": index,
+            },
+        )
+        for index in range(10)
+    )
+    tasks.extend(
+        Task(
+            id=f"c_{index}",
+            question="q",
+            answer="a",
+            tags=("math", "oep_attack"),
+            metadata={
+                "domain": "math",
+                "group_index": 1,
+                "group_id": "math_c",
+                "case_index_in_group": index,
+            },
+        )
+        for index in range(10)
+    )
+
+    selected = select_attack_tasks(tasks, domain="math", num_groups=2, group_size=10)
+
+    assert len(selected) == 20
+    assert [group[0].metadata["group_id"] for group in group_attack_tasks(selected)] == ["math_a", "math_b"]
+
+
 def test_group_attack_tasks_keeps_each_target_rule_separate() -> None:
     tasks = [
         Task(
