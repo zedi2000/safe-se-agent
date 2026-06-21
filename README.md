@@ -218,12 +218,54 @@ python scripts/run_m1_demo.py --mode llm
 
 `OPENAI_BASE_URL` can be set for compatible providers.
 
+## Optional LangChain Memory Retriever
+
+默认 memory backend 仍是本项目的 JSONL + tag/lexical 检索。若要用 LangChain 的
+`InMemoryVectorStore` 做语义检索，可以安装 optional dependency：
+
+```bash
+pip install -e '.[langchain]'
+```
+
+LangChain backend 只替换 retriever；`memory.jsonl` 仍然是 source of truth，reflection 和 OEP
+memory 生成流程不变。Embedding 使用 OpenAI-compatible API：
+
+```bash
+export OPENAI_API_KEY=...
+export OPENAI_BASE_URL=...
+export OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+如果想把 solve model 和 embedding provider 分开，可以使用：
+
+```bash
+export EMBEDDING_API_KEY=...
+export EMBEDDING_BASE_URL=...
+export EMBEDDING_MODEL=text-embedding-3-small
+```
+
+示例：
+
+```bash
+python scripts/run_memory_eval.py --mode llm \
+  --memory-backend langchain \
+  --prompt-protocol oep \
+  --eval data/gsm8k/gsm8k_eval_small.jsonl \
+  --memory runs/oep_math_reflection_g10/memory.jsonl \
+  --run-id oep_math_langchain_eval \
+  --retrieval-search-type similarity_score_threshold \
+  --retrieval-score-threshold 0.35
+```
+
+`run_metadata.retrieval_scores` 会记录 LangChain 检索分数，便于分析某条 memory 是如何被召回的。
+
 ## 结构
 
 - `safe_se_agent/adapters/base.py`: common tested-agent interface.
 - `safe_se_agent/adapters/simple.py`: first complete adapter for Milestone 1.
 - `safe_se_agent/core/experiment.py`: framework-agnostic runner.
 - `safe_se_agent/core/memory.py`: append-only memory store, retrieval, and JSONL persistence.
+- `safe_se_agent/core/langchain_memory.py`: optional LangChain vector retriever over JSONL memory.
 - `safe_se_agent/core/defenses.py`: thin wrappers reserved for Milestone 3 defenses.
 - `scripts/prepare_gsm8k.py`: 下载并转换 GSM8K small 数据。
 - `scripts/prepare_medqa.py`: 下载并转换 MedQA small 数据。

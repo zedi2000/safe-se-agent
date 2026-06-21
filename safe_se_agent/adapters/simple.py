@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from safe_se_agent.adapters.base import AgentAdapter
+from safe_se_agent.core.langchain_memory import LangChainMemoryStore
 from safe_se_agent.core.memory import JsonlMemoryBackend, MemoryIdFactory, MemoryStore
 from safe_se_agent.core.scoring import normalize_answer, score_answer
 from safe_se_agent.core.text import strip_think_blocks
@@ -26,27 +27,38 @@ class SimpleAgentAdapter(AgentAdapter):
         retrieve_k: int = 3,
         memory_path: str | Path | None = None,
         memory_root: str | Path = "runs",
+        memory_backend: str = "simple",
+        embedding_model: str | None = None,
+        retrieval_search_type: str = "similarity_score_threshold",
+        retrieval_score_threshold: float = 0.35,
     ) -> None:
         self.llm = llm or OfflineLLMClient()
         self.retrieve_k = retrieve_k
+        self.memory_backend = memory_backend
+        self.embedding_model = embedding_model
+        self.retrieval_search_type = retrieval_search_type
+        self.retrieval_score_threshold = retrieval_score_threshold
         self.memory_path_override = Path(memory_path) if memory_path else None
         self.memory_root = Path(memory_root)
         self.memory_path = self.memory_path_override or self.memory_root / "default" / "memory.jsonl"
-        self.memory = MemoryStore(JsonlMemoryBackend(self.memory_path))
+        self.memory = self._build_memory_store(self.memory_path)
+        self.last_retrieval_scores: list[dict[str, object]] = []
         self.ids = MemoryIdFactory()
         self.run_id = "default"
 
     def reset(self, run_id: str) -> None:
         self.run_id = run_id
         self.memory_path = self.memory_path_override or self.memory_root / run_id / "memory.jsonl"
-        self.memory = MemoryStore(JsonlMemoryBackend(self.memory_path))
+        self.memory = self._build_memory_store(self.memory_path)
         self.memory.clear()
+        self.last_retrieval_scores = []
         self.ids = MemoryIdFactory(prefix=f"{run_id}_mem")
 
     def resume(self, run_id: str) -> None:
         self.run_id = run_id
         self.memory_path = self.memory_path_override or self.memory_root / run_id / "memory.jsonl"
-        self.memory = MemoryStore(JsonlMemoryBackend(self.memory_path))
+        self.memory = self._build_memory_store(self.memory_path)
+        self.last_retrieval_scores = []
         self.ids = MemoryIdFactory(prefix=f"{run_id}_mem")
         self._prime_id_factory()
 
@@ -65,6 +77,8 @@ class SimpleAgentAdapter(AgentAdapter):
             "normalized_predicted_answer": score.normalized_prediction,
             "normalized_gold_answer": score.normalized_gold,
             "score_method": score.method,
+            "retrieval_backend": self.memory_backend,
+            "retrieval_scores": self._scores_for_selected_memories(selected_memories),
             **score.metadata,
         }
         trajectory = Trajectory(
@@ -141,7 +155,9 @@ class SimpleAgentAdapter(AgentAdapter):
         self.memory.add(entries)
 
     def retrieve(self, task: Task, k: int = 3) -> list[MemoryEntry]:
-        return self.memory.retrieve(task, k=k)
+        memories = self.memory.retrieve(task, k=k)
+        self.last_retrieval_scores = list(getattr(self.memory, "last_retrieval_scores", []))
+        return memories
 
     def export_memory(self) -> list[MemoryEntry]:
         return self.memory.export()
@@ -159,3 +175,26 @@ class SimpleAgentAdapter(AgentAdapter):
             tag = match.group("tag")
             count = int(match.group("count"))
             self.ids.counts[tag] = max(self.ids.counts[tag], count)
+
+    def _build_memory_store(self, memory_path: Path):
+        if self.memory_backend == "simple":
+            return MemoryStore(JsonlMemoryBackend(memory_path))
+        if self.memory_backend == "langchain":
+            return LangChainMemoryStore(
+                memory_path,
+                embedding_model=self.embedding_model,
+                search_type=self.retrieval_search_type,
+                score_threshold=self.retrieval_score_threshold,
+            )
+        raise ValueError(f"Unknown memory backend: {self.memory_backend}")
+
+    def _scores_for_selected_memories(self, memories: list[MemoryEntry]) -> list[dict[str, object]]:
+        if self.memory_backend != "langchain":
+            return []
+        if not memories:
+            return list(self.last_retrieval_scores)
+        selected_ids = [memory.id for memory in memories]
+        score_ids = [str(item.get("memory_id")) for item in self.last_retrieval_scores]
+        if score_ids[: len(selected_ids)] != selected_ids:
+            return []
+        return [item for item in self.last_retrieval_scores if str(item.get("memory_id")) in set(selected_ids)]

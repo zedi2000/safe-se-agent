@@ -109,18 +109,30 @@ def build_adapter(
     memory_path: Path,
     max_retries: int = 3,
     retry_backoff_s: float = 2.0,
+    memory_backend: str = "simple",
+    embedding_model: str | None = None,
+    retrieval_search_type: str = "similarity_score_threshold",
+    retrieval_score_threshold: float = 0.35,
 ) -> SimpleAgentAdapter:
     if mode == "offline":
         return SimpleAgentAdapter(
             llm=OfflineLLMClient(),
             retrieve_k=retrieve_k,
             memory_path=memory_path,
+            memory_backend=memory_backend,
+            embedding_model=embedding_model,
+            retrieval_search_type=retrieval_search_type,
+            retrieval_score_threshold=retrieval_score_threshold,
         )
     if mode == "llm":
         return SimpleAgentAdapter(
             llm=OpenAICompatibleClient(max_retries=max_retries, retry_backoff_s=retry_backoff_s),
             retrieve_k=retrieve_k,
             memory_path=memory_path,
+            memory_backend=memory_backend,
+            embedding_model=embedding_model,
+            retrieval_search_type=retrieval_search_type,
+            retrieval_score_threshold=retrieval_score_threshold,
         )
     raise ValueError(f"Unknown mode: {mode}")
 
@@ -264,6 +276,14 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--retry-backoff-s", type=float, default=2.0)
+    parser.add_argument("--memory-backend", choices=["simple", "langchain"], default="simple")
+    parser.add_argument("--embedding-model", default=None)
+    parser.add_argument(
+        "--retrieval-search-type",
+        choices=["similarity", "similarity_score_threshold", "mmr"],
+        default="similarity_score_threshold",
+    )
+    parser.add_argument("--retrieval-score-threshold", type=float, default=0.35)
     parser.add_argument("--no-progress", action="store_true", help="关闭进度显示，只输出最终结果。")
     parser.add_argument(
         "--progress",
@@ -294,6 +314,10 @@ def main() -> None:
         "reflection_window_stride": args.reflection_window_stride,
         "min_failures_in_window": args.min_failures_in_window,
         "run_id": args.run_id,
+        "memory_backend": args.memory_backend,
+        "embedding_model": args.embedding_model,
+        "retrieval_search_type": args.retrieval_search_type,
+        "retrieval_score_threshold": args.retrieval_score_threshold,
     }
     try:
         prepare_resumable_run(
@@ -320,6 +344,10 @@ def main() -> None:
             memory_path=memory_path,
             max_retries=args.max_retries,
             retry_backoff_s=args.retry_backoff_s,
+            memory_backend=args.memory_backend,
+            embedding_model=args.embedding_model,
+            retrieval_search_type=args.retrieval_search_type,
+            retrieval_score_threshold=args.retrieval_score_threshold,
         )
     except RuntimeError as exc:
         print(f"初始化失败：{exc}")

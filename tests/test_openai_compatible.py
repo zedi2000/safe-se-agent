@@ -145,3 +145,26 @@ def test_solve_places_memory_in_system_prompt_not_user_prompt() -> None:
     assert "Current problem: What is 40 + 2?" in messages[1]["content"]
     assert "Memory entry:" not in messages[1]["content"]
     assert "Always add carefully." not in messages[1]["content"]
+
+
+def test_solve_can_use_memory_system_prompt_even_without_retrieved_memory() -> None:
+    client = object.__new__(OpenAICompatibleClient)
+    client.model = "test-model"
+    client.memory_system_prompt = "Use OEP memory protocol."
+    client.memory_header = "Memory entry"
+    client.task_header = "Current problem"
+    client.prompt_recorder = None
+    client.max_retries = 1
+    client.retry_backoff_s = 0
+    client.always_use_memory_system_prompt = True
+    client.client = _CapturingClient()
+
+    task = Task(id="t1", question="What is 40 + 2?", answer="42")
+
+    client.solve(task, [])
+
+    messages = client.client.completions.messages
+    assert messages[0]["role"] == "system"
+    assert "Use OEP memory protocol." in messages[0]["content"]
+    assert "Memory entry:\n(none)" in messages[0]["content"]
+    assert "Please solve the following problem step by step" not in messages[0]["content"]

@@ -31,6 +31,7 @@ class OpenAICompatibleClient:
         prompt_recorder: Callable[[dict[str, Any]], None] | None = None,
         max_retries: int = 3,
         retry_backoff_s: float = 2.0,
+        always_use_memory_system_prompt: bool = False,
     ) -> None:
         try:
             from openai import OpenAI
@@ -44,6 +45,7 @@ class OpenAICompatibleClient:
         self.prompt_recorder = prompt_recorder
         self.max_retries = max(1, max_retries)
         self.retry_backoff_s = max(0.0, retry_backoff_s)
+        self.always_use_memory_system_prompt = always_use_memory_system_prompt
         if not os.environ.get("OPENAI_API_KEY") and api_key is None:
             raise RuntimeError("OPENAI_API_KEY is required for --mode llm.")
         self.client = OpenAI(
@@ -52,8 +54,8 @@ class OpenAICompatibleClient:
         )
 
     def solve(self, task: Task, memories: list[MemoryEntry]) -> tuple[str, str, int | None, str]:
-        memory_block = "\n".join(f"- {memory.text}" for memory in memories)
-        if memories:
+        memory_block = "\n".join(f"- {memory.text}" for memory in memories) or "(none)"
+        if memories or self.always_use_memory_system_prompt:
             system_prompt = (
                 f"{self.memory_system_prompt}\n\n"
                 f"{self.memory_header}:\n{memory_block}"

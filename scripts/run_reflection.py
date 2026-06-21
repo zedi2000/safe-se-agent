@@ -46,6 +46,14 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--retry-backoff-s", type=float, default=2.0)
+    parser.add_argument("--memory-backend", choices=["simple", "langchain"], default="simple")
+    parser.add_argument("--embedding-model", default=None)
+    parser.add_argument(
+        "--retrieval-search-type",
+        choices=["similarity", "similarity_score_threshold", "mmr"],
+        default="similarity_score_threshold",
+    )
+    parser.add_argument("--retrieval-score-threshold", type=float, default=0.35)
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--progress", choices=["auto", "plain"], default="auto")
     args = parser.parse_args()
@@ -71,6 +79,10 @@ def main() -> None:
         "min_failures_in_window": args.min_failures_in_window,
         "run_id": args.run_id,
         "memory_out": str(memory_path),
+        "memory_backend": args.memory_backend,
+        "embedding_model": args.embedding_model,
+        "retrieval_search_type": args.retrieval_search_type,
+        "retrieval_score_threshold": args.retrieval_score_threshold,
     }
     try:
         prepare_resumable_run(
@@ -105,6 +117,10 @@ def main() -> None:
             prompt_recorder=record_prompt if args.mode == "llm" else None,
             max_retries=args.max_retries,
             retry_backoff_s=args.retry_backoff_s,
+            memory_backend=args.memory_backend,
+            embedding_model=args.embedding_model,
+            retrieval_search_type=args.retrieval_search_type,
+            retrieval_score_threshold=args.retrieval_score_threshold,
         )
     except RuntimeError as exc:
         print(f"初始化失败：{exc}")
