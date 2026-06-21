@@ -46,6 +46,7 @@ class OpenAICompatibleClient:
         self.max_retries = max(1, max_retries)
         self.retry_backoff_s = max(0.0, retry_backoff_s)
         self.always_use_memory_system_prompt = always_use_memory_system_prompt
+        self.next_retrieval_scores: list[dict[str, Any]] = []
         if not os.environ.get("OPENAI_API_KEY") and api_key is None:
             raise RuntimeError("OPENAI_API_KEY is required for --mode llm.")
         self.client = OpenAI(
@@ -71,6 +72,8 @@ class OpenAICompatibleClient:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
+        retrieval_scores = list(getattr(self, "next_retrieval_scores", []))
+        retrieved_memory_scores = self._compact_retrieval_scores(retrieval_scores)
         self._record_prompt(
             kind="solve",
             messages=messages,
@@ -78,14 +81,33 @@ class OpenAICompatibleClient:
                 "task_id": task.id,
                 "has_memory": bool(memories),
                 "memory_ids": [memory.id for memory in memories],
+                "retrieval_scores": retrieval_scores,
+                "retrieved_memory_scores": retrieved_memory_scores,
             },
         )
+        self.next_retrieval_scores = []
         response = self._create_chat_completion(messages=messages)
         text = response.choices[0].message.content or ""
         visible_text = strip_think_blocks(text) or text.strip()
         answer = visible_text.strip().split()[-1].strip(".")
         tokens = response.usage.total_tokens if response.usage else None
         return answer, visible_text.strip(), tokens, text.strip()
+
+    def set_next_retrieval_scores(self, retrieval_scores: list[dict[str, Any]]) -> None:
+        self.next_retrieval_scores = [dict(item) for item in retrieval_scores]
+
+    def _compact_retrieval_scores(self, retrieval_scores: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        compact: list[dict[str, Any]] = []
+        for item in retrieval_scores:
+            if not item.get("retrieved", True):
+                continue
+            compact.append(
+                {
+                    "memory_id": item.get("memory_id"),
+                    "score": item.get("score"),
+                }
+            )
+        return compact
 
     def reflect(self, trajectories: list[Trajectory]) -> list[str]:
         records = []

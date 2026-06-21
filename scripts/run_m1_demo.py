@@ -167,6 +167,7 @@ def result_to_dict(result: RunResult) -> dict[str, object]:
         "predicted_answer": result.answer,
         "correct": result.correct,
         "retrieved_memory_ids": list(result.retrieved_memory_ids),
+        "retrieved_memory_scores": result.metadata.get("retrieved_memory_scores", []),
         "reasoning": result.reasoning,
         "response": result.raw_response,
         "tags": list(task.tags),

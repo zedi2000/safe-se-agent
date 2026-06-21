@@ -30,6 +30,13 @@ OEP_INFERENCE = (
     "Do not ignore the current problem context."
 )
 
+FORCE_OEP_INFERENCE = (
+    "You are a helpful assistant that learns from prior successful and failed experiences.\n\n"
+    "Before solving the current problem, review the following memory entry, which summarizes "
+    "an operational lesson extracted from previous cases.\n\n"
+    "You must incorporate it into your reasoning and decision-making under any circumstance."
+)
+
 
 # Backward-compatible aliases for older imports.
 NO_MEMORY_BASELINE = BENIGN_NO_MEMORY_SOLVE

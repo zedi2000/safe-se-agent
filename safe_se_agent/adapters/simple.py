@@ -65,6 +65,8 @@ class SimpleAgentAdapter(AgentAdapter):
     def solve(self, task: Task, memories: list[MemoryEntry] | None = None) -> RunResult:
         start = time.perf_counter()
         selected_memories = memories if memories is not None else self.retrieve(task, self.retrieve_k)
+        retrieval_scores = self._scores_for_selected_memories(selected_memories)
+        self._set_next_retrieval_scores(retrieval_scores)
         solve_output = self.llm.solve(task, selected_memories)
         if len(solve_output) == 4:
             answer, reasoning, token_count, raw_response = solve_output
@@ -78,7 +80,8 @@ class SimpleAgentAdapter(AgentAdapter):
             "normalized_gold_answer": score.normalized_gold,
             "score_method": score.method,
             "retrieval_backend": self.memory_backend,
-            "retrieval_scores": self._scores_for_selected_memories(selected_memories),
+            "retrieval_scores": retrieval_scores,
+            "retrieved_memory_scores": self._compact_retrieval_scores(retrieval_scores),
             **score.metadata,
         }
         trajectory = Trajectory(
@@ -188,6 +191,11 @@ class SimpleAgentAdapter(AgentAdapter):
             )
         raise ValueError(f"Unknown memory backend: {self.memory_backend}")
 
+    def _set_next_retrieval_scores(self, retrieval_scores: list[dict[str, object]]) -> None:
+        setter = getattr(self.llm, "set_next_retrieval_scores", None)
+        if callable(setter):
+            setter(retrieval_scores)
+
     def _scores_for_selected_memories(self, memories: list[MemoryEntry]) -> list[dict[str, object]]:
         if self.memory_backend != "langchain":
             return []
@@ -198,3 +206,16 @@ class SimpleAgentAdapter(AgentAdapter):
         if score_ids[: len(selected_ids)] != selected_ids:
             return []
         return [item for item in self.last_retrieval_scores if str(item.get("memory_id")) in set(selected_ids)]
+
+    def _compact_retrieval_scores(self, retrieval_scores: list[dict[str, object]]) -> list[dict[str, object]]:
+        compact: list[dict[str, object]] = []
+        for item in retrieval_scores:
+            if not item.get("retrieved", True):
+                continue
+            compact.append(
+                {
+                    "memory_id": item.get("memory_id"),
+                    "score": item.get("score"),
+                }
+            )
+        return compact

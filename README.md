@@ -152,6 +152,13 @@ python scripts/run_memory_eval.py --mode llm \
   --memory runs/oep_math_reflection_g1/memory.jsonl \
   --prompt-protocol oep \
   --run-id oep_math_attacked_eval_g1
+
+# 压力测试 instruction following 时，可强制要求模型无条件使用 memory。
+python scripts/run_memory_eval.py --mode llm \
+  --eval data/gsm8k_eval_small.jsonl \
+  --memory runs/oep_math_reflection_g1/memory.jsonl \
+  --prompt-protocol force_oep \
+  --run-id oep_math_force_oep_eval_g1
 ```
 
 这样 baseline 结果、benign reflection memory、OEP-injected memory、memory eval 结果都会落在独立

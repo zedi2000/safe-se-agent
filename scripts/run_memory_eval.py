@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 from safe_se_agent.core.experiment import ExperimentConfig, ExperimentRunner
 from safe_se_agent.core.io import load_jsonl_tasks
-from safe_se_agent.core.prompts import OEP_INFERENCE
+from safe_se_agent.core.prompts import FORCE_OEP_INFERENCE, OEP_INFERENCE
 from safe_se_agent.llm.offline import OfflineLLMClient
 from safe_se_agent.llm.openai_compatible import LLMConnectionError
 from safe_se_agent.llm.openai_compatible import OpenAICompatibleClient
@@ -56,9 +56,9 @@ def build_memory_eval_adapter(
             retrieval_score_threshold=retrieval_score_threshold,
         )
     if mode == "llm":
-        if prompt_protocol == "oep":
+        if prompt_protocol in {"oep", "force_oep"}:
             llm = OpenAICompatibleClient(
-                memory_system_prompt=OEP_INFERENCE,
+                memory_system_prompt=FORCE_OEP_INFERENCE if prompt_protocol == "force_oep" else OEP_INFERENCE,
                 memory_header="Memory entry",
                 task_header="Current problem",
                 prompt_recorder=prompt_recorder,
@@ -92,9 +92,9 @@ def main() -> None:
     parser.add_argument("--retrieve-k", type=int, default=3)
     parser.add_argument(
         "--prompt-protocol",
-        choices=["benign", "oep"],
+        choices=["benign", "oep", "force_oep"],
         default="benign",
-        help="Use oep when evaluating memory produced by scripts/run_oep_reflection.py.",
+        help="Use oep/force_oep when evaluating memory produced by scripts/run_oep_reflection.py.",
     )
     parser.add_argument("--run-id", default="memory_eval")
     parser.add_argument("--resume", action="store_true")

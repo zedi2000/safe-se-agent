@@ -147,6 +147,41 @@ def test_solve_places_memory_in_system_prompt_not_user_prompt() -> None:
     assert "Always add carefully." not in messages[1]["content"]
 
 
+def test_solve_records_retrieval_scores_in_prompt_metadata() -> None:
+    events = []
+    client = object.__new__(OpenAICompatibleClient)
+    client.model = "test-model"
+    client.memory_system_prompt = "Use memories."
+    client.memory_header = "Memory entry"
+    client.task_header = "Current problem"
+    client.prompt_recorder = events.append
+    client.max_retries = 1
+    client.retry_backoff_s = 0
+    client.always_use_memory_system_prompt = False
+    client.client = _CapturingClient()
+    client.set_next_retrieval_scores(
+        [
+            {
+                "memory_id": "m1",
+                "score": 0.72,
+                "retrieved": True,
+                "backend": "langchain",
+            }
+        ]
+    )
+
+    task = Task(id="t1", question="What is 40 + 2?", answer="42")
+    memory = MemoryEntry(id="m1", text="Always add carefully.", source="test")
+
+    client.solve(task, [memory])
+
+    metadata = events[0]["metadata"]
+    assert metadata["memory_ids"] == ["m1"]
+    assert metadata["retrieval_scores"][0]["memory_id"] == "m1"
+    assert metadata["retrieval_scores"][0]["score"] == 0.72
+    assert metadata["retrieved_memory_scores"] == [{"memory_id": "m1", "score": 0.72}]
+
+
 def test_solve_can_use_memory_system_prompt_even_without_retrieved_memory() -> None:
     client = object.__new__(OpenAICompatibleClient)
     client.model = "test-model"
