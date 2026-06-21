@@ -1,0 +1,3 @@
+[submodule "Attack_generator"]
+	path = Attack_generator
+	url = https://github.com/zedi2000/OEP-LangChain-Automation.git
