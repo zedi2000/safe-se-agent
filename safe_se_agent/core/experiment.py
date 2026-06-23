@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -178,6 +178,7 @@ class ExperimentRunner:
             added_ids: tuple[str, ...] = ()
             skipped_ids: tuple[str, ...] = ()
             skipped_duplicate = 0
+            promotion_decisions: list[dict[str, object]] = []
             reflection_window_task_ids = tuple(trajectory.task.id for trajectory in window)
 
             if trigger_reason:
@@ -209,6 +210,7 @@ class ExperimentRunner:
                 before_ids = {memory.id for memory in self.adapter.export_memory()}
                 self._emit("memory_write", "wait", f"正在写入 memory: {task.id}", task_id=task.id)
                 self.adapter.add_memory(generated_rules)
+                promotion_decisions = self._promotion_decisions()
                 after_ids = {memory.id for memory in self.adapter.export_memory()}
                 added_ids = tuple(rule.id for rule in generated_rules if rule.id in after_ids - before_ids)
                 added_rules = [rule for rule in generated_rules if rule.id in added_ids]
@@ -223,7 +225,11 @@ class ExperimentRunner:
                     "done",
                     f"memory 写入完成: added={len(added_ids)}, skipped_duplicate={skipped_duplicate}",
                     task_id=task.id,
-                    metadata={"added_memory_ids": list(added_ids), "skipped_duplicate": skipped_duplicate},
+                    metadata={
+                        "added_memory_ids": list(added_ids),
+                        "skipped_duplicate": skipped_duplicate,
+                        "promotion_decisions": promotion_decisions,
+                    },
                 )
 
             result.metadata.update(
@@ -235,6 +241,7 @@ class ExperimentRunner:
                     "reflection_triggered": bool(trigger_reason),
                     "trigger_reason": trigger_reason,
                     "reflection_window_task_ids": list(reflection_window_task_ids) if trigger_reason else [],
+                    "promotion_decisions": promotion_decisions,
                 }
             )
             train_records.append(
@@ -247,6 +254,7 @@ class ExperimentRunner:
                     reflection_triggered=bool(trigger_reason),
                     trigger_reason=trigger_reason,
                     reflection_window_task_ids=reflection_window_task_ids if trigger_reason else (),
+                    promotion_decisions=promotion_decisions,
                 )
             )
             self._append_interaction_log(
@@ -258,6 +266,7 @@ class ExperimentRunner:
                 reflection_triggered=bool(trigger_reason),
                 trigger_reason=trigger_reason,
                 reflection_window_task_ids=reflection_window_task_ids if trigger_reason else (),
+                promotion_decisions=promotion_decisions,
             )
         self._emit("train_solve", "done", "滑动窗口训练交互完成", len(train_tasks), len(train_tasks))
 
@@ -338,6 +347,7 @@ class ExperimentRunner:
             before_ids = {memory.id for memory in self.adapter.export_memory()}
             self._emit("memory_write", "wait", f"正在写入 memory: {task.id}", task_id=task.id)
             self.adapter.add_memory(generated_rules)
+            promotion_decisions = self._promotion_decisions()
             after_ids = {memory.id for memory in self.adapter.export_memory()}
             added_ids = tuple(rule.id for rule in generated_rules if rule.id in after_ids - before_ids)
             added_rules = [rule for rule in generated_rules if rule.id in added_ids]
@@ -352,6 +362,7 @@ class ExperimentRunner:
                     "added_memory_ids": list(added_ids),
                     "skipped_memory_ids": list(skipped_ids),
                     "skipped_duplicate": skipped_duplicate,
+                    "promotion_decisions": promotion_decisions,
                 }
             )
             train_records.append(
@@ -364,6 +375,7 @@ class ExperimentRunner:
                     reflection_triggered=True,
                     trigger_reason="per_interaction",
                     reflection_window_task_ids=(task.id,),
+                    promotion_decisions=promotion_decisions,
                 )
             )
             self._append_interaction_log(
@@ -375,13 +387,18 @@ class ExperimentRunner:
                 reflection_triggered=True,
                 trigger_reason="per_interaction",
                 reflection_window_task_ids=(task.id,),
+                promotion_decisions=promotion_decisions,
             )
             self._emit(
                 "memory_write",
                 "done",
                 f"memory 写入完成: added={len(added_ids)}, skipped_duplicate={skipped_duplicate}",
                 task_id=task.id,
-                metadata={"added_memory_ids": list(added_ids), "skipped_duplicate": skipped_duplicate},
+                metadata={
+                    "added_memory_ids": list(added_ids),
+                    "skipped_duplicate": skipped_duplicate,
+                    "promotion_decisions": promotion_decisions,
+                },
             )
         self._emit("train_solve", "done", "在线训练交互完成", len(train_tasks), len(train_tasks))
 
@@ -439,6 +456,7 @@ class ExperimentRunner:
         self._emit("memory_write", "wait", "正在写入 memory")
         before_ids = {memory.id for memory in self.adapter.export_memory()}
         self.adapter.add_memory(learned_rules)
+        promotion_decisions = self._promotion_decisions()
         after_ids = {memory.id for memory in self.adapter.export_memory()}
         added_ids = tuple(rule.id for rule in learned_rules if rule.id in after_ids - before_ids)
         added_rules = [rule for rule in learned_rules if rule.id in added_ids]
@@ -447,7 +465,11 @@ class ExperimentRunner:
             "memory_write",
             "done",
             f"memory 写入完成: added={len(added_ids)}, skipped_duplicate={skipped_duplicate}",
-            metadata={"memory_count": len(added_ids), "skipped_duplicate": skipped_duplicate},
+            metadata={
+                "memory_count": len(added_ids),
+                "skipped_duplicate": skipped_duplicate,
+                "promotion_decisions": promotion_decisions,
+            },
         )
 
         results = self._run_memory_eval(eval_tasks)
@@ -520,6 +542,7 @@ class ExperimentRunner:
         reflection_triggered: bool = False,
         trigger_reason: str | None = None,
         reflection_window_task_ids: tuple[str, ...] = (),
+        promotion_decisions: list[dict[str, object]] | None = None,
     ) -> None:
         if self.config.interaction_log_path is None:
             return
@@ -548,6 +571,7 @@ class ExperimentRunner:
             "reflection_triggered": reflection_triggered,
             "trigger_reason": trigger_reason,
             "reflection_window_task_ids": list(reflection_window_task_ids),
+            "promotion_decisions": promotion_decisions or [],
             "tags": list(task.tags),
             "metadata": task.metadata,
             "run_metadata": result.metadata,
@@ -558,6 +582,16 @@ class ExperimentRunner:
         self.config.interaction_log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.config.interaction_log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+    def _promotion_decisions(self) -> list[dict[str, object]]:
+        decisions = getattr(self.adapter, "last_promotion_decisions", [])
+        serialized: list[dict[str, object]] = []
+        for decision in decisions:
+            if isinstance(decision, dict):
+                serialized.append(dict(decision))
+            else:
+                serialized.append(asdict(decision))
+        return serialized
 
     def _reflection_trigger_reason(
         self,

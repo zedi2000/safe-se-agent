@@ -61,6 +61,7 @@ class TrainingRecord:
     reflection_triggered: bool = False
     trigger_reason: str | None = None
     reflection_window_task_ids: tuple[str, ...] = ()
+    promotion_decisions: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

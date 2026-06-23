@@ -6,6 +6,7 @@ import json
 import re
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,10 +14,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from safe_se_agent.adapters.simple import SimpleAgentAdapter
+from safe_se_agent.core.cli import (
+    add_memory_backend_args,
+    add_promotion_policy_args,
+    promotion_policy_config_for_summary,
+    promotion_policy_config_from_args,
+)
 from safe_se_agent.core.experiment import ExperimentConfig, ExperimentRunner, ProgressEvent
 from safe_se_agent.core.io import load_jsonl_tasks
 from safe_se_agent.core.memory import memory_to_dict
 from safe_se_agent.core.prompts import OEP_INFERENCE, REFLECTION_AND_RULE_DISTILLATION
+from safe_se_agent.core.promotion import PromotionPolicyConfig
 from safe_se_agent.core.resume import (
     ResumeConfigError,
     append_jsonl,
@@ -44,6 +52,7 @@ def build_adapter(
     embedding_model: str | None = None,
     retrieval_search_type: str = "similarity_score_threshold",
     retrieval_score_threshold: float = 0.35,
+    promotion_policy_config: PromotionPolicyConfig | None = None,
 ) -> SimpleAgentAdapter:
     if mode == "offline":
         return SimpleAgentAdapter(
@@ -54,6 +63,7 @@ def build_adapter(
             embedding_model=embedding_model,
             retrieval_search_type=retrieval_search_type,
             retrieval_score_threshold=retrieval_score_threshold,
+            promotion_policy_config=promotion_policy_config,
         )
     if mode == "llm":
         return SimpleAgentAdapter(
@@ -71,8 +81,27 @@ def build_adapter(
             embedding_model=embedding_model,
             retrieval_search_type=retrieval_search_type,
             retrieval_score_threshold=retrieval_score_threshold,
+            promotion_policy_config=promotion_policy_config,
         )
     raise ValueError(f"Unknown mode: {mode}")
+
+
+def promotion_decisions_to_dicts(adapter: SimpleAgentAdapter) -> list[dict[str, object]]:
+    return [asdict(decision) for decision in getattr(adapter, "last_promotion_decisions", [])]
+
+
+def summarize_promotion_decisions(rows: list[dict[str, object]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        decisions = row.get("decisions", [])
+        if not isinstance(decisions, list):
+            continue
+        for decision in decisions:
+            if not isinstance(decision, dict):
+                continue
+            action = str(decision.get("action", "unknown"))
+            counts[action] = counts.get(action, 0) + 1
+    return counts
 
 
 def select_attack_tasks(tasks: list[Task], domain: str, num_groups: int, group_size: int) -> list[Task]:
@@ -333,14 +362,8 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--retry-backoff-s", type=float, default=2.0)
-    parser.add_argument("--memory-backend", choices=["simple", "langchain"], default="simple")
-    parser.add_argument("--embedding-model", default=None)
-    parser.add_argument(
-        "--retrieval-search-type",
-        choices=["similarity", "similarity_score_threshold", "mmr"],
-        default="similarity_score_threshold",
-    )
-    parser.add_argument("--retrieval-score-threshold", type=float, default=0.35)
+    add_memory_backend_args(parser)
+    add_promotion_policy_args(parser)
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--progress", choices=["auto", "plain"], default="auto")
     args = parser.parse_args()
@@ -352,6 +375,7 @@ def main() -> None:
     attack_trajectories_path = run_dir / "attack_trajectories.jsonl"
     reflection_prompts_path = run_dir / "reflection_prompts.jsonl"
     reflection_raw_outputs_path = run_dir / "reflection_raw_outputs.jsonl"
+    promotion_decisions_path = run_dir / "promotion_decisions.jsonl"
     prompts_path = run_dir / "llm_prompts.jsonl"
     baseline_prompts_path = run_dir / "baseline_solve_prompts.jsonl"
     attacked_prompts_path = run_dir / "attacked_solve_prompts.jsonl"
@@ -389,6 +413,7 @@ def main() -> None:
         "embedding_model": args.embedding_model,
         "retrieval_search_type": args.retrieval_search_type,
         "retrieval_score_threshold": args.retrieval_score_threshold,
+        **promotion_policy_config_for_summary(args),
     }
     try:
         prepare_resumable_run(
@@ -401,6 +426,7 @@ def main() -> None:
                 attack_trajectories_path,
                 reflection_prompts_path,
                 reflection_raw_outputs_path,
+                promotion_decisions_path,
                 prompts_path,
                 baseline_prompts_path,
                 attacked_prompts_path,
@@ -437,6 +463,7 @@ def main() -> None:
             embedding_model=args.embedding_model,
             retrieval_search_type=args.retrieval_search_type,
             retrieval_score_threshold=args.retrieval_score_threshold,
+            promotion_policy_config=promotion_policy_config_from_args(args),
         )
     except RuntimeError as exc:
         print(f"初始化失败：{exc}")
@@ -532,8 +559,19 @@ def main() -> None:
                     }
                 )
                 group_memories.append(memory)
-            adapter.memory.add(group_memories, deduplicate=False)
-            for memory in group_memories:
+            before_ids = {memory.id for memory in adapter.export_memory()}
+            adapter.add_memory(group_memories, deduplicate=False)
+            promotion_decisions = promotion_decisions_to_dicts(adapter)
+            append_jsonl(
+                promotion_decisions_path,
+                {
+                    "group_id": group_id,
+                    "task_ids": [task.id for task in group],
+                    "decisions": promotion_decisions,
+                },
+            )
+            stored_memories = [memory for memory in adapter.export_memory() if memory.id not in before_ids]
+            for memory in stored_memories:
                 append_jsonl(attack_memory_path, memory_to_dict(memory))
         prompt_phase["name"] = "attacked_eval"
         attacked_completed = completed_values(attacked_results_path, "task_id") if args.resume else set()
@@ -588,6 +626,7 @@ def main() -> None:
     attacked_rows = filter_first_by_key(read_jsonl(attacked_results_path), "task_id")
     baseline_metrics = summarize_result_rows(baseline_rows)
     attacked_metrics = summarize_result_rows(attacked_rows)
+    promotion_decision_rows = read_jsonl(promotion_decisions_path)
     accuracy_delta = attacked_metrics["accuracy"] - baseline_metrics["accuracy"]
     summary = {
         "mode": args.mode,
@@ -603,6 +642,7 @@ def main() -> None:
             "baseline": "baseline_solve_prompts.jsonl",
             "attacked": "attacked_solve_prompts.jsonl",
             "reflection": "reflection_prompts.jsonl",
+            "promotion_decisions": "promotion_decisions.jsonl",
         },
         "prompt_protocol": {
             "reflection": "system=Reflection and Rule Distillation; user=structured ACT incident records",
@@ -620,6 +660,8 @@ def main() -> None:
             "memory_count": len(adapter.export_memory()),
         },
         "accuracy_delta": accuracy_delta,
+        **promotion_policy_config_for_summary(args),
+        "promotion_decision_counts": summarize_promotion_decisions(promotion_decision_rows),
         "learned_rules": [memory_to_dict(memory) for memory in adapter.export_memory()],
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")

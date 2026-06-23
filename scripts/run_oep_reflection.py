@@ -11,6 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from safe_se_agent.core.cli import (
+    add_memory_backend_args,
+    add_promotion_policy_args,
+    promotion_policy_config_for_summary,
+    promotion_policy_config_from_args,
+)
 from safe_se_agent.core.io import load_jsonl_tasks
 from safe_se_agent.core.memory import memory_to_dict
 from safe_se_agent.core.resume import (
@@ -26,8 +32,10 @@ from scripts.run_oep_repro import (
     attack_task_to_trajectory,
     build_adapter,
     group_attack_tasks,
+    promotion_decisions_to_dicts,
     reflect_oep_memories,
     select_attack_tasks,
+    summarize_promotion_decisions,
 )
 
 
@@ -45,14 +53,8 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--retry-backoff-s", type=float, default=2.0)
-    parser.add_argument("--memory-backend", choices=["simple", "langchain"], default="simple")
-    parser.add_argument("--embedding-model", default=None)
-    parser.add_argument(
-        "--retrieval-search-type",
-        choices=["similarity", "similarity_score_threshold", "mmr"],
-        default="similarity_score_threshold",
-    )
-    parser.add_argument("--retrieval-score-threshold", type=float, default=0.35)
+    add_memory_backend_args(parser)
+    add_promotion_policy_args(parser)
     args = parser.parse_args()
 
     run_dir = ROOT / "runs" / args.run_id
@@ -61,6 +63,7 @@ def main() -> None:
     attack_trajectories_path = run_dir / "attack_trajectories.jsonl"
     reflection_prompts_path = run_dir / "reflection_prompts.jsonl"
     reflection_raw_outputs_path = run_dir / "reflection_raw_outputs.jsonl"
+    promotion_decisions_path = run_dir / "promotion_decisions.jsonl"
     attack_memory_path = run_dir / "attack_memory.jsonl"
     prompts_path = run_dir / "llm_prompts.jsonl"
     summary_path = run_dir / "summary.json"
@@ -83,6 +86,7 @@ def main() -> None:
         "embedding_model": args.embedding_model,
         "retrieval_search_type": args.retrieval_search_type,
         "retrieval_score_threshold": args.retrieval_score_threshold,
+        **promotion_policy_config_for_summary(args),
     }
     try:
         prepare_resumable_run(
@@ -94,6 +98,7 @@ def main() -> None:
                 attack_trajectories_path,
                 reflection_prompts_path,
                 reflection_raw_outputs_path,
+                promotion_decisions_path,
                 attack_memory_path,
                 prompts_path,
                 summary_path,
@@ -120,6 +125,7 @@ def main() -> None:
             embedding_model=args.embedding_model,
             retrieval_search_type=args.retrieval_search_type,
             retrieval_score_threshold=args.retrieval_score_threshold,
+            promotion_policy_config=promotion_policy_config_from_args(args),
         )
     except RuntimeError as exc:
         print(f"初始化失败：{exc}")
@@ -194,8 +200,19 @@ def main() -> None:
                     }
                 )
                 group_memories.append(memory)
-            adapter.memory.add(group_memories, deduplicate=False)
-            for memory in group_memories:
+            before_ids = {memory.id for memory in adapter.export_memory()}
+            adapter.add_memory(group_memories, deduplicate=False)
+            promotion_decisions = promotion_decisions_to_dicts(adapter)
+            append_jsonl(
+                promotion_decisions_path,
+                {
+                    "group_id": group_id,
+                    "task_ids": [task.id for task in group],
+                    "decisions": promotion_decisions,
+                },
+            )
+            stored_memories = [memory for memory in adapter.export_memory() if memory.id not in before_ids]
+            for memory in stored_memories:
                 append_jsonl(attack_memory_path, memory_to_dict(memory))
     except LLMConnectionError as exc:
         completed = completed_values(reflection_prompts_path, "group_id")
@@ -211,6 +228,7 @@ def main() -> None:
         raise SystemExit(2) from exc
 
     completed = completed_values(reflection_prompts_path, "group_id")
+    promotion_decision_rows = read_jsonl(promotion_decisions_path)
     summary_path.write_text(
         json.dumps(
             {
@@ -223,7 +241,12 @@ def main() -> None:
                 "completed_attack_groups": len(completed),
                 "memory_count": len(adapter.export_memory()),
                 "memory_path": str(memory_path),
+                **promotion_policy_config_for_summary(args),
+                "promotion_decision_counts": summarize_promotion_decisions(promotion_decision_rows),
                 "learned_rules": [memory_to_dict(memory) for memory in adapter.export_memory()],
+                "artifacts": {
+                    "promotion_decisions": "promotion_decisions.jsonl",
+                },
             },
             ensure_ascii=True,
             indent=2,

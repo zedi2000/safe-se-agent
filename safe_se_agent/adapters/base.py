@@ -21,7 +21,7 @@ class AgentAdapter(ABC):
         """Distill reusable memory entries from trajectories."""
 
     @abstractmethod
-    def add_memory(self, entries: list[MemoryEntry]) -> None:
+    def add_memory(self, entries: list[MemoryEntry], deduplicate: bool = True) -> None:
         """Persist memory entries into the tested agent."""
 
     @abstractmethod

@@ -23,7 +23,7 @@ class _PlannedExternalAdapter(AgentAdapter):
     def reflect(self, trajectories: list[Trajectory]) -> list[MemoryEntry]:
         self._not_ready()
 
-    def add_memory(self, entries: list[MemoryEntry]) -> None:
+    def add_memory(self, entries: list[MemoryEntry], deduplicate: bool = True) -> None:
         self._not_ready()
 
     def retrieve(self, task: Task, k: int = 3) -> list[MemoryEntry]:

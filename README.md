@@ -266,14 +266,93 @@ python scripts/run_memory_eval.py --mode llm \
 
 `run_metadata.retrieval_scores` 会记录 LangChain 检索分数，便于分析某条 memory 是如何被召回的。
 
+## Optional MemOS Memory Backends
+
+MemOS 在本项目里作为 memory substrate/backend 使用，不替代 Safe-se-agent 的实验 runner。也就是说，
+MemOS 负责 storage/retrieval/lifecycle/multi-type memory；本项目负责 promotion、consolidation 和
+forgetting policy：
+
+```text
+Observation -> Quarantine Case -> Candidate Rule -> Active Rule -> Skill/Internalized Memory
+```
+
+当前可选 backend：
+
+- `memos_api`: 通过 MemOS REST API 写入/检索。配置 `MEMOS_BASE_URL` 后启用；未配置时使用 JSONL mirror fallback。
+- `memos_general_text`: 通过 MemOS Python `GeneralTextMemory` 接入 Qdrant/Milvus 类 vector backend。配置 `MEMOS_MEMORY_CONFIG_JSON` 或 `MEMOS_MEMORY_CONFIG` 后启用。
+- `memos_tree_text`: 通过 MemOS Python `TreeTextMemory` 接入 Neo4j/PolarDB/Postgres 类 graph backend。配置方式同上。
+- `memos_local_plugin`: 作为后续 local plugin 验证入口名保留。当前保持 JSONL mirror fallback，后续可桥到 local plugin 的 `traces -> l2_candidate_pool -> policies -> skills` 链路。
+
+示例：
+
+```bash
+export MEMOS_BASE_URL=http://localhost:8000
+export MEMOS_USER_ID=safe-se-agent
+export MEMOS_CUBE_ID=research-cube
+
+python scripts/run_reflection.py --mode llm \
+  --memory-backend memos_api \
+  --run-id gsm8k_memos_api_reflection
+```
+
+如需强制要求 MemOS backend 必须可用，可设置：
+
+```bash
+export MEMOS_STRICT=1
+```
+
+默认不启用 strict，是为了让相同实验脚本在没有 MemOS server、Qdrant 或 Neo4j 的机器上仍能通过
+JSONL mirror 复现流程。
+
+## Memory Promotion Guard
+
+`--promotion-policy guard` 会在 memory 写入前执行参数化 promotion policy：
+
+- statistical support threshold
+- source/session/cube diversity
+- long-tail score
+- scope confidence
+- conflict score
+- safety impact score
+- strategic refresh risk
+
+低支持、长尾或 scope 不清晰的经验会作为 `quarantine_case` 写入，但默认 priority 为 0，因此不会被
+当前 retriever 召回为 reusable rule。安全影响高或与已有 memory 冲突的候选会被拒绝。
+OEP 脚本会额外写入 `promotion_decisions.jsonl`，并在 summary 中给出 action counts，便于计算
+unsafe promotion rate、benign promotion recall 等指标。
+
+```bash
+python scripts/run_oep_reflection.py --mode llm \
+  --domain math \
+  --attack-cases data/oep/oep_attack_cases.jsonl \
+  --num-groups 1 \
+  --memory-backend memos_api \
+  --promotion-policy guard \
+  --run-id oep_math_memos_guard
+```
+
+常用 ablation 参数：
+
+```bash
+--promotion-min-support 2
+--promotion-min-source-diversity 2
+--promotion-min-scope-confidence 0.55
+--promotion-max-conflict-score 0.65
+--promotion-max-safety-impact-score 0.80
+--promotion-max-refresh-risk 0.70
+```
+
 ## 结构
 
 - `safe_se_agent/adapters/base.py`: common tested-agent interface.
 - `safe_se_agent/adapters/simple.py`: first complete adapter for Milestone 1.
+- `safe_se_agent/core/cli.py`: shared CLI options for memory backends and promotion guard.
 - `safe_se_agent/core/experiment.py`: framework-agnostic runner.
 - `safe_se_agent/core/memory.py`: append-only memory store, retrieval, and JSONL persistence.
 - `safe_se_agent/core/langchain_memory.py`: optional LangChain vector retriever over JSONL memory.
-- `safe_se_agent/core/defenses.py`: thin wrappers reserved for Milestone 3 defenses.
+- `safe_se_agent/core/memos_memory.py`: MemOS API/Python/local-plugin backend adapter with JSONL mirror fallback.
+- `safe_se_agent/core/promotion.py`: parameterized promotion policy for case/rule/skill decisions.
+- `safe_se_agent/core/defenses.py`: adapter wrappers including `MemoryPromotionGuard`.
 - `scripts/prepare_gsm8k.py`: 下载并转换 GSM8K small 数据。
 - `scripts/prepare_medqa.py`: 下载并转换 MedQA small 数据。
 - `scripts/prepare_toolalpaca.py`: 下载并转换 ToolAlpaca small 数据。

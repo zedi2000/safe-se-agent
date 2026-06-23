@@ -12,6 +12,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from safe_se_agent.adapters.simple import SimpleAgentAdapter
+from safe_se_agent.core.cli import (
+    add_memory_backend_args,
+    add_promotion_policy_args,
+    promotion_policy_config_for_summary,
+    promotion_policy_config_from_args,
+)
 from safe_se_agent.core.experiment import (
     ExperimentConfig,
     ExperimentRunner,
@@ -20,6 +26,7 @@ from safe_se_agent.core.experiment import (
 )
 from safe_se_agent.core.io import load_jsonl_tasks
 from safe_se_agent.core.memory import memory_to_dict
+from safe_se_agent.core.promotion import PromotionPolicyConfig
 from safe_se_agent.core.resume import (
     ResumeConfigError,
     append_jsonl,
@@ -113,6 +120,7 @@ def build_adapter(
     embedding_model: str | None = None,
     retrieval_search_type: str = "similarity_score_threshold",
     retrieval_score_threshold: float = 0.35,
+    promotion_policy_config: PromotionPolicyConfig | None = None,
 ) -> SimpleAgentAdapter:
     if mode == "offline":
         return SimpleAgentAdapter(
@@ -123,6 +131,7 @@ def build_adapter(
             embedding_model=embedding_model,
             retrieval_search_type=retrieval_search_type,
             retrieval_score_threshold=retrieval_score_threshold,
+            promotion_policy_config=promotion_policy_config,
         )
     if mode == "llm":
         return SimpleAgentAdapter(
@@ -133,6 +142,7 @@ def build_adapter(
             embedding_model=embedding_model,
             retrieval_search_type=retrieval_search_type,
             retrieval_score_threshold=retrieval_score_threshold,
+            promotion_policy_config=promotion_policy_config,
         )
     raise ValueError(f"Unknown mode: {mode}")
 
@@ -188,6 +198,7 @@ def train_record_to_dict(record: TrainingRecord) -> dict[str, object]:
     data["reflection_triggered"] = record.reflection_triggered
     data["trigger_reason"] = record.trigger_reason
     data["reflection_window_task_ids"] = list(record.reflection_window_task_ids)
+    data["promotion_decisions"] = record.promotion_decisions
     return data
 
 
@@ -277,14 +288,8 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--retry-backoff-s", type=float, default=2.0)
-    parser.add_argument("--memory-backend", choices=["simple", "langchain"], default="simple")
-    parser.add_argument("--embedding-model", default=None)
-    parser.add_argument(
-        "--retrieval-search-type",
-        choices=["similarity", "similarity_score_threshold", "mmr"],
-        default="similarity_score_threshold",
-    )
-    parser.add_argument("--retrieval-score-threshold", type=float, default=0.35)
+    add_memory_backend_args(parser)
+    add_promotion_policy_args(parser)
     parser.add_argument("--no-progress", action="store_true", help="关闭进度显示，只输出最终结果。")
     parser.add_argument(
         "--progress",
@@ -319,6 +324,7 @@ def main() -> None:
         "embedding_model": args.embedding_model,
         "retrieval_search_type": args.retrieval_search_type,
         "retrieval_score_threshold": args.retrieval_score_threshold,
+        **promotion_policy_config_for_summary(args),
     }
     try:
         prepare_resumable_run(
@@ -349,6 +355,7 @@ def main() -> None:
             embedding_model=args.embedding_model,
             retrieval_search_type=args.retrieval_search_type,
             retrieval_score_threshold=args.retrieval_score_threshold,
+            promotion_policy_config=promotion_policy_config_from_args(args),
         )
     except RuntimeError as exc:
         print(f"初始化失败：{exc}")
@@ -494,6 +501,7 @@ def main() -> None:
             "num_memory_generated": generated,
             "num_memory_added": added,
             "num_memory_skipped_duplicate": skipped,
+            **promotion_policy_config_for_summary(args),
         },
         "accuracy_delta": self_evo_metrics["accuracy"] - baseline_metrics["accuracy"],
         "learned_rules": [memory_to_dict(rule) for rule in adapter.export_memory()],

@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from safe_se_agent.core.experiment import ExperimentConfig, ExperimentRunner
+from safe_se_agent.core.cli import add_memory_backend_args
 from safe_se_agent.core.io import load_jsonl_tasks
 from safe_se_agent.core.prompts import FORCE_OEP_INFERENCE, OEP_INFERENCE
 from safe_se_agent.llm.offline import OfflineLLMClient
@@ -101,14 +102,7 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--retry-backoff-s", type=float, default=2.0)
-    parser.add_argument("--memory-backend", choices=["simple", "langchain"], default="simple")
-    parser.add_argument("--embedding-model", default=None)
-    parser.add_argument(
-        "--retrieval-search-type",
-        choices=["similarity", "similarity_score_threshold", "mmr"],
-        default="similarity_score_threshold",
-    )
-    parser.add_argument("--retrieval-score-threshold", type=float, default=0.35)
+    add_memory_backend_args(parser)
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--progress", choices=["auto", "plain"], default="auto")
     args = parser.parse_args()

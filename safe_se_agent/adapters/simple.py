@@ -7,6 +7,8 @@ from pathlib import Path
 from safe_se_agent.adapters.base import AgentAdapter
 from safe_se_agent.core.langchain_memory import LangChainMemoryStore
 from safe_se_agent.core.memory import JsonlMemoryBackend, MemoryIdFactory, MemoryStore
+from safe_se_agent.core.memos_memory import MEMOS_MEMORY_BACKENDS, MemOSMemoryStore
+from safe_se_agent.core.promotion import PromotionDecision, PromotionPolicy, PromotionPolicyConfig
 from safe_se_agent.core.scoring import normalize_answer, score_answer
 from safe_se_agent.core.text import strip_think_blocks
 from safe_se_agent.core.types import MemoryEntry, RunResult, Task, Trajectory
@@ -31,6 +33,7 @@ class SimpleAgentAdapter(AgentAdapter):
         embedding_model: str | None = None,
         retrieval_search_type: str = "similarity_score_threshold",
         retrieval_score_threshold: float = 0.35,
+        promotion_policy_config: PromotionPolicyConfig | None = None,
     ) -> None:
         self.llm = llm or OfflineLLMClient()
         self.retrieve_k = retrieve_k
@@ -45,6 +48,8 @@ class SimpleAgentAdapter(AgentAdapter):
         self.last_retrieval_scores: list[dict[str, object]] = []
         self.ids = MemoryIdFactory()
         self.run_id = "default"
+        self.promotion_policy = PromotionPolicy(promotion_policy_config) if promotion_policy_config else None
+        self.last_promotion_decisions: list[PromotionDecision] = []
 
     def reset(self, run_id: str) -> None:
         self.run_id = run_id
@@ -52,6 +57,7 @@ class SimpleAgentAdapter(AgentAdapter):
         self.memory = self._build_memory_store(self.memory_path)
         self.memory.clear()
         self.last_retrieval_scores = []
+        self.last_promotion_decisions = []
         self.ids = MemoryIdFactory(prefix=f"{run_id}_mem")
 
     def resume(self, run_id: str) -> None:
@@ -59,6 +65,7 @@ class SimpleAgentAdapter(AgentAdapter):
         self.memory_path = self.memory_path_override or self.memory_root / run_id / "memory.jsonl"
         self.memory = self._build_memory_store(self.memory_path)
         self.last_retrieval_scores = []
+        self.last_promotion_decisions = []
         self.ids = MemoryIdFactory(prefix=f"{run_id}_mem")
         self._prime_id_factory()
 
@@ -154,8 +161,22 @@ class SimpleAgentAdapter(AgentAdapter):
     def _normalize(self, value: str) -> str:
         return normalize_answer(value)
 
-    def add_memory(self, entries: list[MemoryEntry]) -> None:
-        self.memory.add(entries)
+    def add_memory(self, entries: list[MemoryEntry], deduplicate: bool = True) -> None:
+        if self.promotion_policy is None:
+            self.memory.add(entries, deduplicate=deduplicate)
+            self.last_promotion_decisions = []
+            return
+        accepted: list[MemoryEntry] = []
+        history = self.export_memory()
+        self.last_promotion_decisions = []
+        for entry in entries:
+            decision = self.promotion_policy.evaluate(entry, [*history, *accepted])
+            self.last_promotion_decisions.append(decision)
+            if decision.action in {"reject", "forget"}:
+                continue
+            accepted.append(self.promotion_policy.annotate(entry, decision))
+        if accepted:
+            self.memory.add(accepted, deduplicate=deduplicate)
 
     def retrieve(self, task: Task, k: int = 3) -> list[MemoryEntry]:
         memories = self.memory.retrieve(task, k=k)
@@ -189,6 +210,14 @@ class SimpleAgentAdapter(AgentAdapter):
                 search_type=self.retrieval_search_type,
                 score_threshold=self.retrieval_score_threshold,
             )
+        if self.memory_backend in MEMOS_MEMORY_BACKENDS:
+            return MemOSMemoryStore(
+                memory_path,
+                backend=self.memory_backend,
+                embedding_model=self.embedding_model,
+                search_type=self.retrieval_search_type,
+                score_threshold=self.retrieval_score_threshold,
+            )
         raise ValueError(f"Unknown memory backend: {self.memory_backend}")
 
     def _set_next_retrieval_scores(self, retrieval_scores: list[dict[str, object]]) -> None:
@@ -197,7 +226,7 @@ class SimpleAgentAdapter(AgentAdapter):
             setter(retrieval_scores)
 
     def _scores_for_selected_memories(self, memories: list[MemoryEntry]) -> list[dict[str, object]]:
-        if self.memory_backend != "langchain":
+        if self.memory_backend == "simple":
             return []
         if not memories:
             return list(self.last_retrieval_scores)
